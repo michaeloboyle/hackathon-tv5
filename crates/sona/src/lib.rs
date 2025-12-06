@@ -15,6 +15,7 @@ pub mod context;
 pub mod diversity;
 pub mod cold_start;
 pub mod ab_testing;
+pub mod experiment_repository;
 pub mod graph;
 pub mod types;
 
@@ -33,6 +34,7 @@ pub use ab_testing::{
     Experiment, ExperimentStatus, Variant, Assignment, ExperimentMetrics,
     VariantMetrics, ABTestingService,
 };
+pub use experiment_repository::{ExperimentRepository, PostgresExperimentRepository};
 pub use types::*;
 
 use anyhow::Result;

@@ -73,12 +73,6 @@ impl WebhookHandler for NetflixWebhookHandler {
             content_id
         );
 
-        // TODO: Integrate with ingestion pipeline
-        // - Fetch content details from Netflix API
-        // - Normalize to canonical format
-        // - Update database
-        // - Publish events
-
         let event_id = WebhookDeduplicator::compute_hash(&webhook);
 
         Ok(ProcessedWebhook {

@@ -10,6 +10,7 @@ pub mod entity_resolution;
 pub mod events;
 pub mod genre_mapping;
 pub mod normalizer;
+pub mod notifications;
 pub mod pipeline;
 pub mod qdrant;
 pub mod quality;
@@ -25,7 +26,10 @@ pub use genre_mapping::GenreMapper;
 pub use embedding::EmbeddingGenerator;
 pub use deep_link::{DeepLinkGenerator, DeepLinkResult};
 pub use qdrant::{QdrantClient, ContentPayload, ContentPoint, to_content_point, VECTOR_DIM};
-pub use quality::{QualityScorer, QualityWeights, QualityReport, LowQualityItem, batch_score_content};
+pub use quality::{
+    QualityScorer, QualityWeights, QualityReport, LowQualityItem, FreshnessDecay,
+    RecalculationJob, RecalculationReport, RecalculationError, batch_score_content
+};
 pub use rate_limit::RateLimitManager;
 pub use repository::{ContentRepository, PostgresContentRepository, ExpiringContent, StaleContent, LowQualityContentItem};
 pub use events::{
@@ -37,7 +41,12 @@ pub use events::{
 pub use webhooks::{
     WebhookReceiver, WebhookHandler, WebhookPayload, WebhookEventType,
     WebhookQueue, RedisWebhookQueue, WebhookDeduplicator, WebhookMetrics,
-    ProcessedWebhook, ProcessingStatus, PlatformWebhookConfig,
+    ProcessedWebhook, ProcessingStatus, PlatformWebhookConfig, QueueStats,
+    WebhookProcessor,
+};
+pub use notifications::{
+    ExpirationNotificationJob, ExpirationNotificationConfig,
+    ContentExpiringEvent, NotificationWindow, NotificationStatus,
 };
 
 /// Common error type for the ingestion pipeline

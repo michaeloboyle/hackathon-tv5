@@ -22,11 +22,13 @@
 //! - `pagination`: Pagination utilities for API endpoints
 //! - `shutdown`: Graceful shutdown coordinator
 //! - `audit`: Audit logging system for tracking user actions and system events
+//! - `events`: User activity event streaming to Kafka
 
 pub mod audit;
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod events;
 pub mod health;
 pub mod math;
 pub mod metrics;
@@ -45,6 +47,10 @@ mod tests;
 
 // Re-export commonly used types
 pub use audit::{AuditAction, AuditError, AuditEvent, AuditFilter, AuditLogger, PostgresAuditLogger};
+pub use events::{
+    ActivityEventError, ActivityEventResult, ActivityEventType, KafkaActivityProducer,
+    UserActivityEvent, UserActivityProducer,
+};
 pub use config::{
     ConfigLoader, DatabaseConfig as ConfigDatabaseConfig, RedisConfig, ServiceConfig,
     load_dotenv,

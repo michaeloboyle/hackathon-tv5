@@ -21,6 +21,10 @@ use crate::{
         delete_current_user, get_current_user, update_current_user, upload_avatar,
         handlers::ProfileState, ProfileStorage,
     },
+    rate_limit_admin_handlers::{
+        delete_rate_limit, get_rate_limit, list_rate_limits, update_rate_limit,
+    },
+    rate_limit_config::RateLimitConfigStore,
     rbac::RbacManager,
     scopes::ScopeManager,
     session::SessionManager,
@@ -443,7 +447,7 @@ struct DeviceApprovalRequest {
 #[post("/auth/device/approve")]
 async fn approve_device(
     req: web::Json<DeviceApprovalRequest>,
-    auth_header: web::Header<actix_web::http::header::Authorization<actix_web::http::header::authorization::Bearer>>,
+    auth_header: web::Header<actix_web_httpauth::headers::authorization::Authorization<actix_web_httpauth::headers::authorization::Bearer>>,
     state: Data<AppState>,
 ) -> Result<impl Responder> {
     // Extract and verify JWT token
@@ -615,7 +619,7 @@ struct MfaEnrollResponse {
 
 #[post("/api/v1/auth/mfa/enroll")]
 async fn mfa_enroll(
-    auth_header: web::Header<actix_web::http::header::Authorization<actix_web::http::header::authorization::Bearer>>,
+    auth_header: web::Header<actix_web_httpauth::headers::authorization::Authorization<actix_web_httpauth::headers::authorization::Bearer>>,
     state: Data<AppState>,
 ) -> Result<impl Responder> {
     let mfa_manager = state.mfa_manager.as_ref().ok_or(AuthError::Internal("MFA not configured".to_string()))?;
@@ -648,7 +652,7 @@ struct MfaVerifyRequest {
 #[post("/api/v1/auth/mfa/verify")]
 async fn mfa_verify(
     req: web::Json<MfaVerifyRequest>,
-    auth_header: web::Header<actix_web::http::header::Authorization<actix_web::http::header::authorization::Bearer>>,
+    auth_header: web::Header<actix_web_httpauth::headers::authorization::Authorization<actix_web_httpauth::headers::authorization::Bearer>>,
     state: Data<AppState>,
 ) -> Result<impl Responder> {
     let mfa_manager = state.mfa_manager.as_ref().ok_or(AuthError::Internal("MFA not configured".to_string()))?;
@@ -689,7 +693,7 @@ struct MfaChallengeRequest {
 #[post("/api/v1/auth/mfa/challenge")]
 async fn mfa_challenge(
     req: web::Json<MfaChallengeRequest>,
-    auth_header: web::Header<actix_web::http::header::Authorization<actix_web::http::header::authorization::Bearer>>,
+    auth_header: web::Header<actix_web_httpauth::headers::authorization::Authorization<actix_web_httpauth::headers::authorization::Bearer>>,
     state: Data<AppState>,
 ) -> Result<impl Responder> {
     let mfa_manager = state.mfa_manager.as_ref().ok_or(AuthError::Internal("MFA not configured".to_string()))?;
@@ -816,8 +820,20 @@ async fn reset_password(
     // Delete reset token (single-use)
     state.storage.delete_password_reset_token(&req.token).await?;
 
-    // Invalidate all existing sessions for this user
-    state.storage.delete_user_sessions(&reset_token.user_id).await?;
+    // Invalidate all existing sessions for this user (except current if requested)
+    let sessions_invalidated = state.session_manager.invalidate_all_user_sessions(&user_id, None).await.unwrap_or(0);
+
+    // Revoke all refresh tokens for this user
+    let tokens_revoked = state.token_family_manager.revoke_all_user_tokens(&user_id).await.unwrap_or(0);
+
+    // TODO: Emit sessions-invalidated event to Kafka
+    tracing::info!(
+        user_id = %user_id,
+        email = %reset_token.email,
+        sessions_invalidated = %sessions_invalidated,
+        tokens_revoked = %tokens_revoked,
+        "Password reset successful"
+    );
 
     // Send password changed notification email
     if let Some(email_manager) = &state.email_manager {
@@ -829,10 +845,10 @@ async fn reset_password(
         tracing::warn!("Email manager not configured, password changed notification not sent");
     }
 
-    tracing::info!("Password reset successful for user: {}", reset_token.email);
-
     Ok(HttpResponse::Ok().json(ResetPasswordResponse {
         message: "Password has been reset successfully. All sessions have been invalidated.".to_string(),
+        sessions_invalidated,
+        tokens_revoked,
     }))
 }
 
@@ -893,6 +909,11 @@ pub async fn start_server(
             .unwrap_or_else(|_| "default-parental-pin-secret-change-in-production".to_string()),
     });
 
+    let rate_limit_store = Data::new(Arc::new(RateLimitConfigStore::new(
+        redis_client.clone(),
+        db_pool.clone(),
+    )));
+
     tracing::info!("Starting auth service on {}", bind_address);
 
     let db_pool_data = Data::new(db_pool);
@@ -905,6 +926,7 @@ pub async fn start_server(
             .app_data(user_handler_state.clone())
             .app_data(profile_state.clone())
             .app_data(parental_state.clone())
+            .app_data(rate_limit_store.clone())
             .service(health_check)
             .service(authorize)
             .service(token_exchange)
@@ -928,6 +950,10 @@ pub async fn start_server(
             .service(delete_user)
             .service(impersonate_user)
             .service(get_audit_logs)
+            .service(list_rate_limits)
+            .service(get_rate_limit)
+            .service(update_rate_limit)
+            .service(delete_rate_limit)
             .service(register)
             .service(login)
             .service(get_current_user)

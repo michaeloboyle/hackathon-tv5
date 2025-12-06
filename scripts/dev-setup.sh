@@ -58,6 +58,36 @@ else
     echo "You may need to run migrations manually before starting application services."
 fi
 
+# Load seed data if available
+echo ""
+echo "Loading seed data..."
+if [ -f "scripts/seed-data.sql" ]; then
+    docker-compose exec -T postgres psql -U mediagateway -d media_gateway -f - < scripts/seed-data.sql
+    echo "Seed data loaded successfully!"
+else
+    echo "Note: scripts/seed-data.sql not found. Skipping seed data."
+fi
+
+# Generate SQLx metadata for offline builds
+echo ""
+echo "Generating SQLx metadata for offline builds..."
+if command -v cargo-sqlx >/dev/null 2>&1; then
+    # Set DATABASE_URL for sqlx
+    export DATABASE_URL="postgresql://mediagateway:localdev123@localhost:5432/media_gateway"
+
+    # Prepare SQLx for each crate that uses it
+    for crate in crates/auth crates/discovery crates/sona crates/sync crates/ingestion crates/playback; do
+        if [ -d "$crate" ]; then
+            echo "  Preparing SQLx for $crate..."
+            (cd "$crate" && cargo sqlx prepare --check >/dev/null 2>&1 || cargo sqlx prepare) || true
+        fi
+    done
+    echo "SQLx metadata generation complete!"
+else
+    echo "Note: cargo-sqlx not installed. Install with: cargo install sqlx-cli"
+    echo "      Skipping SQLx metadata generation."
+fi
+
 # Start application services
 echo ""
 echo "Starting application services..."

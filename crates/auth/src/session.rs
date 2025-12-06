@@ -167,6 +167,56 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Invalidate all user sessions except optionally one
+    /// Returns count of invalidated sessions
+    pub async fn invalidate_all_user_sessions(
+        &self,
+        user_id: &Uuid,
+        except_session_id: Option<&str>,
+    ) -> Result<u32> {
+        let mut conn = self.get_connection().await?;
+
+        let user_sessions_key = format!("user:{}:sessions", user_id);
+
+        // Get all session IDs for the user
+        let session_ids: Vec<String> = conn
+            .smembers(&user_sessions_key)
+            .await
+            .map_err(|e| AuthError::Redis(format!("Failed to get user sessions: {}", e)))?;
+
+        let mut invalidated_count = 0u32;
+
+        // Delete all sessions except the one to keep
+        for session_id in &session_ids {
+            if let Some(keep_id) = except_session_id {
+                if session_id == keep_id {
+                    continue;
+                }
+            }
+
+            let session_key = format!("session:{}", session_id);
+            conn.del(&session_key)
+                .await
+                .map_err(|e| AuthError::Redis(format!("Failed to delete session: {}", e)))?;
+
+            // Remove from user's session set
+            conn.srem(&user_sessions_key, session_id)
+                .await
+                .map_err(|e| AuthError::Redis(format!("Failed to remove session from index: {}", e)))?;
+
+            invalidated_count += 1;
+        }
+
+        tracing::info!(
+            "Invalidated {} sessions for user {} (kept: {:?})",
+            invalidated_count,
+            user_id,
+            except_session_id
+        );
+
+        Ok(invalidated_count)
+    }
+
     /// Check if a refresh token JTI is revoked
     pub async fn is_token_revoked(&self, jti: &str) -> Result<bool> {
         let mut conn = self.get_connection().await?;

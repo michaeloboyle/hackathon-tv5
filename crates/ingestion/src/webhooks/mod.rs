@@ -16,13 +16,15 @@ pub mod verification;
 pub mod deduplication;
 pub mod metrics;
 pub mod api;
+pub mod processor;
 
 pub use receiver::WebhookReceiver;
-pub use queue::{WebhookQueue, RedisWebhookQueue};
+pub use queue::{WebhookQueue, RedisWebhookQueue, QueueStats};
 pub use verification::verify_hmac_signature;
 pub use deduplication::WebhookDeduplicator;
 pub use metrics::WebhookMetrics;
 pub use api::configure_routes;
+pub use processor::WebhookProcessor;
 
 /// Webhook errors
 #[derive(Debug, Error)]

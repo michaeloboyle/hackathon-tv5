@@ -4,7 +4,7 @@ use qdrant_client::qdrant::{
 };
 use uuid::Uuid;
 
-use crate::embedding::EmbeddingService;
+use crate::embedding::EmbeddingClient;
 use super::filters::SearchFilters;
 use super::{ContentSummary, SearchResult};
 
@@ -16,7 +16,7 @@ pub struct VectorSearch {
     ef_search: usize,
     top_k: usize,
     similarity_threshold: f32,
-    embedding_service: Option<EmbeddingService>,
+    embedding_client: Option<EmbeddingClient>,
 }
 
 impl VectorSearch {
@@ -28,9 +28,6 @@ impl VectorSearch {
     ) -> Self {
         let client = Qdrant::from_url(&qdrant_url).build().unwrap();
 
-        // Try to create embedding service from environment
-        let embedding_service = EmbeddingService::from_env().ok();
-
         Self {
             client,
             collection_name,
@@ -38,13 +35,13 @@ impl VectorSearch {
             ef_search: 64,
             top_k: 50,
             similarity_threshold: 0.7,
-            embedding_service,
+            embedding_client: None,
         }
     }
 
-    /// Set embedding service
-    pub fn with_embedding_service(mut self, service: EmbeddingService) -> Self {
-        self.embedding_service = Some(service);
+    /// Set embedding client
+    pub fn with_embedding_client(mut self, client: EmbeddingClient) -> Self {
+        self.embedding_client = Some(client);
         self
     }
 
@@ -143,15 +140,22 @@ impl VectorSearch {
         Ok(results)
     }
 
-    /// Generate embedding for query
+    /// Generate embedding for query with fallback
     async fn generate_embedding(&self, query: &str) -> anyhow::Result<Vec<f32>> {
-        match &self.embedding_service {
-            Some(service) => {
-                service.generate(query).await
+        match &self.embedding_client {
+            Some(client) => {
+                match client.generate(query).await {
+                    Ok(embedding) => Ok(embedding),
+                    Err(e) => {
+                        tracing::error!("Embedding generation failed: {}", e);
+                        tracing::warn!("Embedding service failed, vector search will use fallback");
+                        Err(e)
+                    }
+                }
             }
             None => {
-                tracing::warn!("No embedding service configured, using zero vector");
-                Ok(vec![0.0; self.dimension])
+                tracing::warn!("No embedding client configured, vector search unavailable");
+                Err(anyhow::anyhow!("Embedding client not configured"))
             }
         }
     }

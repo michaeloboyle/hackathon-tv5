@@ -2,8 +2,8 @@
 
 use sha2::{Sha256, Digest};
 use chrono::{DateTime, Utc, Duration};
-use redis::{Client, Commands, AsyncCommands};
-use crate::webhooks::{WebhookError, WebhookResult, WebhookPayload};
+use redis::{Client, AsyncCommands};
+use crate::webhooks::{WebhookError, WebhookResult, WebhookPayload, WebhookEventType};
 
 /// Webhook deduplicator
 pub struct WebhookDeduplicator {
@@ -41,7 +41,14 @@ impl WebhookDeduplicator {
 
         // Hash relevant fields (excluding signature)
         hasher.update(webhook.platform.as_bytes());
-        hasher.update(webhook.event_type.to_string().as_bytes());
+
+        let event_type_str = match &webhook.event_type {
+            WebhookEventType::ContentAdded => "content_added",
+            WebhookEventType::ContentUpdated => "content_updated",
+            WebhookEventType::ContentRemoved => "content_removed",
+        };
+        hasher.update(event_type_str.as_bytes());
+
         hasher.update(webhook.payload.to_string().as_bytes());
 
         let result = hasher.finalize();

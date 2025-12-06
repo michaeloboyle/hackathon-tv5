@@ -1,18 +1,23 @@
 pub mod handlers;
 
-pub use handlers::{get_analytics, get_quality_report};
+pub use handlers::{
+    delete_ranking_variant, get_analytics, get_quality_report, get_ranking_config,
+    get_ranking_config_history, get_ranking_variant, list_ranking_variants, update_ranking_config,
+    update_ranking_variant,
+};
 
 use actix_web::{web, HttpResponse, Responder};
 use serde::Serialize;
 use std::sync::Arc;
 
 use crate::config::DiscoveryConfig;
-use crate::search::HybridSearchService;
+use crate::search::{HybridSearchService, RankingConfigStore};
 
 /// Application state shared across all handlers
 pub struct AppState {
     pub config: Arc<DiscoveryConfig>,
     pub search_service: Arc<HybridSearchService>,
+    pub ranking_store: Option<Arc<RankingConfigStore>>,
 }
 
 /// Health check response

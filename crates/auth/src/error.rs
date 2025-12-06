@@ -110,6 +110,12 @@ pub enum AuthError {
     UserNotFound,
 }
 
+impl From<anyhow::Error> for AuthError {
+    fn from(err: anyhow::Error) -> Self {
+        AuthError::Internal(err.to_string())
+    }
+}
+
 impl ResponseError for AuthError {
     fn error_response(&self) -> HttpResponse {
         match self {

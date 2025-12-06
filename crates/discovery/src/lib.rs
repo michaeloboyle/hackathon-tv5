@@ -11,9 +11,9 @@ pub use analytics::{SearchAnalytics, AnalyticsDashboard, PopularQuery, ZeroResul
 pub use cache::{CacheError, CacheStats, RedisCache};
 pub use catalog::{CatalogService, CatalogState, CreateContentRequest, UpdateContentRequest, AvailabilityUpdate, ContentResponse};
 pub use config::DiscoveryConfig;
-pub use embedding::EmbeddingService;
+pub use embedding::{EmbeddingClient, EmbeddingModel, EmbeddingProvider, EmbeddingService};
 pub use intent::{IntentParser, ParsedIntent};
-pub use search::{HybridSearchService, SearchRequest, SearchResponse};
+pub use search::{HybridSearchService, RankingConfig, RankingConfigStore, SearchRequest, SearchResponse};
 
 use std::sync::Arc;
 
@@ -39,6 +39,22 @@ pub async fn init_service(
     });
     let cache = Arc::new(RedisCache::new(cache_config).await?);
 
+    // Initialize embedding client
+    let embedding_provider = EmbeddingProvider::from_env();
+    let embedding_model = EmbeddingModel::from_env();
+    let api_key = if !config.embedding.api_key.is_empty() {
+        config.embedding.api_key.clone()
+    } else {
+        std::env::var("OPENAI_API_KEY").unwrap_or_default()
+    };
+
+    let embedding_client = Arc::new(EmbeddingClient::new(
+        api_key,
+        embedding_provider,
+        embedding_model,
+        Some(cache.clone()),
+    ));
+
     // Initialize intent parser with cache
     let intent_parser = Arc::new(IntentParser::new(
         config.embedding.api_url.clone(),
@@ -46,12 +62,12 @@ pub async fn init_service(
         cache.clone(),
     ));
 
-    // Initialize vector search
+    // Initialize vector search with embedding client
     let vector_search = Arc::new(search::vector::VectorSearch::new(
         config.vector.qdrant_url.clone(),
         config.vector.collection_name.clone(),
         config.vector.dimension,
-    ));
+    ).with_embedding_client((*embedding_client).clone()));
 
     // Initialize keyword search
     let keyword_search = Arc::new(search::keyword::KeywordSearch::new(

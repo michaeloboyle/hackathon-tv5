@@ -40,7 +40,12 @@ pub struct RedisWebhookQueue {
     stream_prefix: String,
     dlq_prefix: String,
     consumer_group: String,
+    platforms: Vec<String>,
+    processing_count: Arc<std::sync::atomic::AtomicU64>,
+    total_processed: Arc<std::sync::atomic::AtomicU64>,
 }
+
+use std::sync::Arc;
 
 impl RedisWebhookQueue {
     /// Create a new Redis webhook queue
@@ -59,12 +64,27 @@ impl RedisWebhookQueue {
         let client = Client::open(redis_url)
             .map_err(|e| WebhookError::RedisError(format!("Failed to connect: {}", e)))?;
 
+        let platforms = std::env::var("WEBHOOK_PLATFORMS")
+            .unwrap_or_else(|_| "netflix,hulu,disney_plus,prime_video,hbo_max,apple_tv_plus,paramount_plus,peacock".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Ok(Self {
             client,
             stream_prefix: stream_prefix.unwrap_or_else(|| "webhooks:incoming".to_string()),
             dlq_prefix: dlq_prefix.unwrap_or_else(|| "webhooks:dlq".to_string()),
             consumer_group: consumer_group.unwrap_or_else(|| "webhook-processors".to_string()),
+            platforms,
+            processing_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            total_processed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
+    }
+
+    pub fn with_platforms(mut self, platforms: Vec<String>) -> Self {
+        self.platforms = platforms;
+        self
     }
 
     /// Initialize consumer group for a platform
@@ -117,15 +137,11 @@ impl WebhookQueue for RedisWebhookQueue {
         Ok(message_id)
     }
 
-    async fn dequeue(&self, consumer_name: &str) -> WebhookResult<Option<(String, WebhookPayload)>> {
+    async fn dequeue(&self, _consumer_name: &str) -> WebhookResult<Option<(String, WebhookPayload)>> {
         let mut conn = self.client.get_async_connection().await
             .map_err(|e| WebhookError::RedisError(format!("Connection failed: {}", e)))?;
 
-        // Read from all platform streams
-        // In production, you'd want to read from specific platforms or use pattern matching
-        let platforms = vec!["netflix", "hulu", "disney_plus"]; // TODO: Make configurable
-
-        for platform in platforms {
+        for platform in &self.platforms {
             let stream_key = self.stream_key(platform);
 
             // Ensure consumer group exists
@@ -154,6 +170,8 @@ impl WebhookQueue for RedisWebhookQueue {
                         let webhook: WebhookPayload = serde_json::from_str(&payload_str)
                             .map_err(|e| WebhookError::SerializationError(e))?;
 
+                        self.processing_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
                         return Ok(Some((message_id, webhook)));
                     }
                 }
@@ -167,11 +185,7 @@ impl WebhookQueue for RedisWebhookQueue {
         let mut conn = self.client.get_async_connection().await
             .map_err(|e| WebhookError::RedisError(format!("Connection failed: {}", e)))?;
 
-        // In production, you'd need to track which stream this message belongs to
-        // For now, we'll try all platforms
-        let platforms = vec!["netflix", "hulu", "disney_plus"];
-
-        for platform in platforms {
+        for platform in &self.platforms {
             let stream_key = self.stream_key(platform);
 
             let _: Result<i32, redis::RedisError> = conn.xack(
@@ -180,6 +194,9 @@ impl WebhookQueue for RedisWebhookQueue {
                 &[message_id]
             ).await;
         }
+
+        self.processing_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.total_processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(())
     }
@@ -208,11 +225,10 @@ impl WebhookQueue for RedisWebhookQueue {
         let mut conn = self.client.get_async_connection().await
             .map_err(|e| WebhookError::RedisError(format!("Connection failed: {}", e)))?;
 
-        let platforms = vec!["netflix", "hulu", "disney_plus"];
         let mut total_pending = 0u64;
         let mut total_dlq = 0u64;
 
-        for platform in platforms {
+        for platform in &self.platforms {
             let stream_key = self.stream_key(platform);
             let dlq_key = self.dlq_key(platform);
 
@@ -229,9 +245,9 @@ impl WebhookQueue for RedisWebhookQueue {
 
         Ok(QueueStats {
             pending_count: total_pending,
-            processing_count: 0, // TODO: Track processing count
+            processing_count: self.processing_count.load(std::sync::atomic::Ordering::Relaxed),
             dead_letter_count: total_dlq,
-            total_processed: 0, // TODO: Track total processed
+            total_processed: self.total_processed.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 }

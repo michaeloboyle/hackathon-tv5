@@ -43,6 +43,60 @@ services:
       retries: 5
       start_period: 10s
 
+  # Zookeeper - Required for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: mg-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Kafka - Event Streaming Platform
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: mg-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   # Qdrant - Vector Database
   qdrant:
     image: qdrant/qdrant:latest
@@ -84,6 +138,63 @@ services:
       retries: 5
       start_period: 10s
 
+  # Prometheus - Metrics Collection
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: mg-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Grafana - Metrics Visualization
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: mg-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: ""
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_PATHS_DATA: /var/lib/grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # API Gateway - Main Entry Point
   api-gateway:
     build:
@@ -98,6 +209,7 @@ services:
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
       QDRANT_GRPC_URL: http://qdrant:6334
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       RUST_LOG: ${RUST_LOG:-info}
       DISCOVERY_URL: http://discovery:8081
       SONA_URL: http://sona:8082
@@ -118,6 +230,8 @@ services:
       qdrant:
         condition: service_healthy
       jaeger:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
@@ -140,6 +254,7 @@ services:
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
       QDRANT_GRPC_URL: http://qdrant:6334
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       RUST_LOG: ${RUST_LOG:-info}
       PORT: 8081
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
@@ -153,6 +268,8 @@ services:
       redis:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
@@ -174,6 +291,7 @@ services:
       DATABASE_URL: postgresql://mediagateway:localdev123@postgres:5432/media_gateway
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       RUST_LOG: ${RUST_LOG:-info}
       PORT: 8082
@@ -208,6 +326,7 @@ services:
     environment:
       DATABASE_URL: postgresql://mediagateway:localdev123@postgres:5432/media_gateway
       REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       JWT_PRIVATE_KEY_PATH: ${JWT_PRIVATE_KEY_PATH:-/app/tests/fixtures/test_private_key.pem}
       JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH:-/app/tests/fixtures/test_public_key.pem}
       JWT_ISSUER: ${JWT_ISSUER:-https://api.mediagateway.io}
@@ -224,6 +343,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
@@ -244,6 +365,7 @@ services:
     environment:
       DATABASE_URL: postgresql://mediagateway:localdev123@postgres:5432/media_gateway
       REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       PUBNUB_PUBLISH_KEY: ${PUBNUB_PUBLISH_KEY}
       PUBNUB_SUBSCRIBE_KEY: ${PUBNUB_SUBSCRIBE_KEY}
       RUST_LOG: ${RUST_LOG:-info}
@@ -278,6 +400,7 @@ services:
       DATABASE_URL: postgresql://mediagateway:localdev123@postgres:5432/media_gateway
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       RUST_LOG: ${RUST_LOG:-info}
       PORT: 8085
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
@@ -312,6 +435,7 @@ services:
     environment:
       DATABASE_URL: postgresql://mediagateway:localdev123@postgres:5432/media_gateway
       REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       RUST_LOG: ${RUST_LOG:-info}
       PORT: 8086
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
@@ -340,6 +464,16 @@ volumes:
   qdrant_data:
     driver: local
   media_uploads:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  zookeeper_data:
+    driver: local
+  zookeeper_log:
+    driver: local
+  kafka_data:
     driver: local
 
 networks:

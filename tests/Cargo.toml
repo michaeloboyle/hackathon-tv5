@@ -6,7 +6,10 @@ edition.workspace = true
 [dependencies]
 # Internal crates (dev dependencies for integration testing)
 media-gateway-core = { path = "../crates/core" }
-# media-gateway-auth = { path = "../crates/auth" }  # Temporarily disabled due to compilation errors
+media-gateway-auth = { path = "../crates/auth" }
+
+# Web framework (for testing)
+actix-web = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
@@ -50,4 +53,14 @@ harness = true
 [[test]]
 name = "playback_tests"
 path = "src/playback_tests.rs"
+harness = true
+
+[[test]]
+name = "e2e_auth_flow_tests"
+path = "src/e2e_auth_flow_tests.rs"
+harness = true
+
+[[test]]
+name = "metrics_endpoint_integration_test"
+path = "metrics_endpoint_integration_test.rs"
 harness = true

@@ -50,8 +50,11 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
+
+use crate::experiment_repository::{ExperimentRepository, PostgresExperimentRepository};
 
 /// Experiment status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
@@ -121,12 +124,24 @@ pub struct VariantMetrics {
 /// A/B Testing service
 pub struct ABTestingService {
     pool: PgPool,
+    repository: Arc<dyn ExperimentRepository>,
 }
 
 impl ABTestingService {
-    /// Create new A/B testing service
+    /// Create new A/B testing service with default PostgreSQL repository
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        let repository = Arc::new(PostgresExperimentRepository::new(pool.clone()));
+        Self { pool, repository }
+    }
+
+    /// Create new A/B testing service with custom repository
+    pub fn with_repository(pool: PgPool, repository: Arc<dyn ExperimentRepository>) -> Self {
+        Self { pool, repository }
+    }
+
+    /// Get reference to the experiment repository
+    pub fn repository(&self) -> &Arc<dyn ExperimentRepository> {
+        &self.repository
     }
 
     /// Create a new experiment

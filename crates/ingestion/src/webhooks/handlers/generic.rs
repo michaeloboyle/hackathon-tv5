@@ -58,13 +58,6 @@ impl WebhookHandler for GenericWebhookHandler {
             webhook.event_type
         );
 
-        // Generic processing - just log and acknowledge
-        // In production, you'd want to:
-        // - Validate required fields
-        // - Transform to canonical format
-        // - Store in database
-        // - Trigger downstream processing
-
         let event_id = WebhookDeduplicator::compute_hash(&webhook);
 
         Ok(ProcessedWebhook {

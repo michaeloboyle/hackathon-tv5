@@ -6,6 +6,7 @@ use crate::proxy::ServiceProxy;
 use crate::rate_limit::RateLimiter;
 use crate::routes;
 use actix_cors::Cors;
+use actix_files as fs;
 use actix_web::{web, App, HttpServer};
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,6 +96,12 @@ impl Server {
                 .route("/health/ready", web::get().to(health::readiness))
                 .route("/health/live", web::get().to(health::liveness))
                 .route("/health/aggregate", web::get().to(health::aggregate))
+                // Health dashboard static files
+                .service(
+                    fs::Files::new("/dashboard/health", "apps/health-dashboard")
+                        .index_file("index.html")
+                        .use_last_modified(true)
+                )
                 // API routes
                 .configure(routes::configure)
         })

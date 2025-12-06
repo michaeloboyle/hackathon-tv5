@@ -182,6 +182,61 @@ impl TokenFamilyManager {
         let exists: bool = conn.exists(&meta_key).await?;
         Ok(exists)
     }
+
+    /// Revoke all refresh tokens for a user by revoking all families
+    /// Returns count of revoked families/tokens
+    #[instrument(skip(self))]
+    pub async fn revoke_all_user_tokens(&self, user_id: &Uuid) -> Result<u32> {
+        let mut conn = self.get_conn().await?;
+
+        // Scan for all token families belonging to this user
+        let pattern = format!("token_family:*:meta");
+        let mut revoked_count = 0u32;
+
+        // Use SCAN to find all family metadata keys
+        let mut cursor = 0;
+        loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await
+                .context("Failed to scan for token families")?;
+
+            for meta_key in keys {
+                // Extract family_id from key "token_family:{family_id}:meta"
+                if let Some(family_id_str) = meta_key.strip_prefix("token_family:")
+                    .and_then(|s| s.strip_suffix(":meta"))
+                {
+                    if let Ok(family_id) = Uuid::parse_str(family_id_str) {
+                        // Check if this family belongs to the user
+                        if let Some(family_user_id) = self.get_family_user(family_id).await? {
+                            if family_user_id == *user_id {
+                                self.revoke_family(family_id).await?;
+                                revoked_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            cursor = next_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        info!(
+            user_id = %user_id,
+            revoked_families = %revoked_count,
+            "Revoked all refresh token families for user"
+        );
+
+        Ok(revoked_count)
+    }
 }
 
 #[cfg(test)]

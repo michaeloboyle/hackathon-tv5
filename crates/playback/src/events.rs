@@ -2,14 +2,18 @@
 //!
 //! Publishes playback events to Kafka for downstream processing
 //! (analytics, recommendations, sync, etc.)
+//!
+//! Also publishes unified user activity events via core event system.
 
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use anyhow::{Result, Context};
+use media_gateway_core::{ActivityEventType, KafkaActivityProducer, UserActivityEvent, UserActivityProducer};
 
 /// Playback event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +73,7 @@ pub trait PlaybackEventProducer: Send + Sync {
 pub struct KafkaPlaybackProducer {
     producer: FutureProducer,
     topic_prefix: String,
+    activity_producer: Option<KafkaActivityProducer>,
 }
 
 impl KafkaPlaybackProducer {
@@ -86,9 +91,19 @@ impl KafkaPlaybackProducer {
             .create()
             .context("Failed to create Kafka producer")?;
 
+        // Initialize unified activity producer (optional)
+        let activity_producer = match KafkaActivityProducer::from_env() {
+            Ok(producer) => Some(producer),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize activity event producer");
+                None
+            }
+        };
+
         Ok(Self {
             producer,
             topic_prefix,
+            activity_producer,
         })
     }
 
@@ -134,6 +149,37 @@ impl PlaybackEventProducer for KafkaPlaybackProducer {
             event.user_id
         );
 
+        // Publish unified user activity event (non-blocking, fire and forget)
+        if let Some(producer) = self.activity_producer.clone() {
+            let user_id = event.user_id;
+            let content_id = event.content_id.to_string();
+            let device_id = event.device_id.clone();
+            let session_id = event.session_id.to_string();
+            let duration = event.duration_seconds;
+            let quality = event.quality.clone();
+
+            tokio::spawn(async move {
+                let metadata = serde_json::json!({
+                    "session_id": session_id,
+                    "device_id": &device_id,
+                    "duration_seconds": duration,
+                    "quality": quality,
+                });
+
+                let activity_event = UserActivityEvent::new(
+                    user_id,
+                    ActivityEventType::PlaybackStart,
+                    metadata,
+                )
+                .with_content_id(content_id)
+                .with_device_id(device_id);
+
+                if let Err(e) = producer.publish_activity(activity_event).await {
+                    tracing::warn!(error = %e, "Failed to publish playback start activity event");
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -167,6 +213,41 @@ impl PlaybackEventProducer for KafkaPlaybackProducer {
             event.session_id,
             event.completion_rate
         );
+
+        // Publish unified user activity event (non-blocking, fire and forget)
+        if let Some(producer) = self.activity_producer.clone() {
+            let user_id = event.user_id;
+            let content_id = event.content_id.to_string();
+            let device_id = event.device_id.clone();
+            let session_id = event.session_id.to_string();
+            let final_position = event.final_position_seconds;
+            let duration = event.duration_seconds;
+            let completion = event.completion_rate;
+
+            tokio::spawn(async move {
+                let activity_type = if completion >= 0.9 {
+                    ActivityEventType::PlaybackComplete
+                } else {
+                    ActivityEventType::PlaybackAbandon
+                };
+
+                let metadata = serde_json::json!({
+                    "session_id": session_id,
+                    "device_id": &device_id,
+                    "final_position_seconds": final_position,
+                    "duration_seconds": duration,
+                    "completion_rate": completion,
+                });
+
+                let activity_event = UserActivityEvent::new(user_id, activity_type, metadata)
+                    .with_content_id(content_id)
+                    .with_device_id(device_id);
+
+                if let Err(e) = producer.publish_activity(activity_event).await {
+                    tracing::warn!(error = %e, "Failed to publish playback end activity event");
+                }
+            });
+        }
 
         Ok(())
     }

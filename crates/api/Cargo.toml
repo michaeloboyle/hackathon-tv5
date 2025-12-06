@@ -14,6 +14,7 @@ path = "src/main.rs"
 media-gateway-core = { workspace = true }
 actix-web = { workspace = true }
 actix-cors = { workspace = true }
+actix-files = "0.6"
 tokio = { workspace = true }
 redis = { workspace = true }
 governor = { workspace = true }

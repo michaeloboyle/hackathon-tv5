@@ -10,6 +10,7 @@ use crate::{
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use media_gateway_core::{ActivityEventType, KafkaActivityProducer, UserActivityEvent, UserActivityProducer};
 
 // ============================================================================
 // Registration Handler
@@ -197,6 +198,7 @@ pub async fn login(
     jwt_manager: web::Data<Arc<JwtManager>>,
     session_manager: web::Data<Arc<SessionManager>>,
     storage: web::Data<Arc<AuthStorage>>,
+    activity_producer: web::Data<Option<Arc<KafkaActivityProducer>>>,
 ) -> Result<impl Responder> {
     // Get user by email
     let user = user_repo
@@ -247,6 +249,23 @@ pub async fn login(
         email = %user.email,
         "User logged in successfully"
     );
+
+    // Publish user login activity event (non-blocking)
+    if let Some(producer) = activity_producer.as_ref() {
+        let metadata = serde_json::json!({
+            "email": user.email.clone(),
+            "login_time": chrono::Utc::now().to_rfc3339(),
+        });
+
+        let event = UserActivityEvent::new(user.id, ActivityEventType::UserLogin, metadata);
+
+        let producer_clone = producer.clone();
+        tokio::spawn(async move {
+            if let Err(e) = producer_clone.publish_activity(event).await {
+                tracing::warn!(error = %e, "Failed to publish login activity event");
+            }
+        });
+    }
 
     Ok(HttpResponse::Ok().json(LoginResponse {
         access_token,

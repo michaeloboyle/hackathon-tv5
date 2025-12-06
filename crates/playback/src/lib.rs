@@ -8,3 +8,4 @@ pub mod watch_history;
 pub mod progress;
 pub mod continue_watching;
 pub mod cleanup;
+pub mod deep_link;

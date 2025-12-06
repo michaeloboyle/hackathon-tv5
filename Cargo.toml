@@ -11,7 +11,9 @@ members = [
     "crates/ingestion",
     "crates/playback",
     "crates/api",
+    "crates/mcp-server",
     "tests",
+    "tools/mg-migrate",
 ]
 resolver = "2"
 

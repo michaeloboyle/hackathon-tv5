@@ -2,7 +2,8 @@ use crate::error::{AuthError, Result};
 use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
     http::StatusCode,
-    Error, HttpMessage, HttpResponse,
+    Error, HttpResponse,
+    body::BoxBody,
 };
 use futures_util::future::LocalBoxFuture;
 use redis::AsyncCommands;
@@ -192,7 +193,7 @@ impl RateLimitMiddleware {
     }
 
     /// Create 429 Too Many Requests response
-    fn create_rate_limit_response(retry_after: u64, current_count: u32, limit: u32) -> HttpResponse {
+    fn create_rate_limit_response(retry_after: u64, current_count: u32, limit: u32) -> HttpResponse<BoxBody> {
         HttpResponse::build(StatusCode::TOO_MANY_REQUESTS)
             .insert_header(("Retry-After", retry_after.to_string()))
             .insert_header(("X-RateLimit-Limit", limit.to_string()))

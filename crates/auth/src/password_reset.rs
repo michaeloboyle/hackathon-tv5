@@ -66,12 +66,16 @@ pub struct ForgotPasswordResponse {
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
+    #[serde(default)]
+    pub keep_current_session: bool,
 }
 
 /// Response for password reset
 #[derive(Debug, Serialize)]
 pub struct ResetPasswordResponse {
     pub message: String,
+    pub sessions_invalidated: u32,
+    pub tokens_revoked: u32,
 }
 
 /// Password strength validator

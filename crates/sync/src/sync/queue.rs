@@ -4,7 +4,7 @@
 /// automatic reconnection handling, and CRDT merge conflict resolution.
 
 use crate::crdt::HLCTimestamp;
-use crate::sync::publisher::{SyncPublisher, PublisherError};
+use crate::sync::publisher::{SyncPublisher, PublisherError, SyncMessage, MessagePayload};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
@@ -678,11 +678,9 @@ impl OfflineSyncQueue {
 
     /// Convert milliseconds timestamp to HLCTimestamp
     fn millis_to_hlc(&self, millis: i64) -> crate::crdt::HLCTimestamp {
-        crate::crdt::HLCTimestamp::new(
-            millis as u64,
-            0,
-            "offline-queue".to_string(),
-        )
+        // Convert milliseconds to microseconds and create HLC timestamp
+        let micros = millis * 1000;
+        crate::crdt::HLCTimestamp::from_components(micros, 0)
     }
 
     /// Get current delta sync metrics
@@ -1424,8 +1422,9 @@ mod tests {
         let millis = 1234567890123i64;
         let hlc = queue.millis_to_hlc(millis);
 
-        assert_eq!(hlc.physical_time, millis as u64);
-        assert_eq!(hlc.logical_counter, 0);
-        assert_eq!(hlc.node_id, "offline-queue");
+        // Convert millis to micros for comparison
+        let expected_micros = millis * 1000;
+        assert_eq!(hlc.physical_time(), expected_micros);
+        assert_eq!(hlc.logical_counter(), 0);
     }
 }

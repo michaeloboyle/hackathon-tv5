@@ -11,6 +11,7 @@ pub mod filters;
 pub mod keyword;
 pub mod personalization;
 pub mod query_processor;
+pub mod ranking;
 pub mod vector;
 
 pub use autocomplete::AutocompleteService;
@@ -19,12 +20,14 @@ pub use filters::SearchFilters;
 pub use keyword::KeywordSearch;
 pub use personalization::PersonalizationService;
 pub use query_processor::QueryProcessor;
+pub use ranking::{RankingConfig, RankingConfigStore, UpdateRankingConfigRequest};
 pub use vector::VectorSearch;
 
 use crate::analytics::SearchAnalytics;
 use crate::cache::RedisCache;
 use crate::config::DiscoveryConfig;
 use crate::intent::{IntentParser, ParsedIntent};
+use media_gateway_core::{ActivityEventType, KafkaActivityProducer, UserActivityEvent, UserActivityProducer};
 
 /// Hybrid search service orchestrator
 pub struct HybridSearchService {
@@ -107,6 +110,15 @@ impl HybridSearchService {
         // Initialize analytics service
         let analytics = Some(Arc::new(SearchAnalytics::new(db_pool.clone())));
 
+        // Initialize activity event producer (optional, logs warning on failure)
+        let activity_producer = match KafkaActivityProducer::from_env() {
+            Ok(producer) => Some(Arc::new(producer)),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize activity event producer");
+                None
+            }
+        };
+
         Self {
             config,
             intent_parser,
@@ -117,6 +129,7 @@ impl HybridSearchService {
             facet_service: Arc::new(FacetService::new()),
             personalization_service,
             analytics,
+            activity_producer,
         }
     }
 
@@ -138,6 +151,15 @@ impl HybridSearchService {
         // Initialize analytics service
         let analytics = Some(Arc::new(SearchAnalytics::new(db_pool.clone())));
 
+        // Initialize activity event producer (optional)
+        let activity_producer = match KafkaActivityProducer::from_env() {
+            Ok(producer) => Some(Arc::new(producer)),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize activity event producer");
+                None
+            }
+        };
+
         Self {
             config,
             intent_parser,
@@ -148,6 +170,7 @@ impl HybridSearchService {
             facet_service: Arc::new(FacetService::new()),
             personalization_service,
             analytics,
+            activity_producer,
         }
     }
 
@@ -179,6 +202,32 @@ impl HybridSearchService {
 
         // Execute full search pipeline
         let response = self.execute_search(&request).await?;
+
+        // Publish user activity event (non-blocking)
+        if let (Some(producer), Some(user_id)) = (&self.activity_producer, request.user_id) {
+            let clicked_items: Vec<String> = response
+                .results
+                .iter()
+                .take(10)
+                .map(|r| r.content.id.to_string())
+                .collect();
+
+            let metadata = serde_json::json!({
+                "query": request.query,
+                "results_count": response.total_count,
+                "clicked_items": clicked_items,
+                "search_time_ms": response.search_time_ms,
+            });
+
+            let event = UserActivityEvent::new(user_id, ActivityEventType::SearchQuery, metadata);
+
+            let producer_clone = producer.clone();
+            tokio::spawn(async move {
+                if let Err(e) = producer_clone.publish_activity(event).await {
+                    tracing::warn!(error = %e, "Failed to publish search activity event");
+                }
+            });
+        }
 
         // Log search event for analytics (non-blocking)
         let latency_ms = start_time.elapsed().as_millis() as i32;
@@ -246,12 +295,42 @@ impl HybridSearchService {
             self.keyword_search.search(&request.query, request.filters.clone())
         );
 
-        // Phase 3: Merge results using Reciprocal Rank Fusion
-        let merged_results = self.reciprocal_rank_fusion(
-            vector_results?,
-            keyword_results?,
-            self.config.search.rrf_k,
-        );
+        // Phase 3: Merge results using Reciprocal Rank Fusion with fallback
+        let merged_results = match (vector_results, keyword_results) {
+            (Ok(vector_res), Ok(keyword_res)) => {
+                // Both strategies succeeded
+                self.reciprocal_rank_fusion(vector_res, keyword_res, self.config.search.rrf_k)
+            }
+            (Err(e), Ok(keyword_res)) => {
+                // Vector search failed, fall back to keyword search only
+                tracing::warn!(
+                    error = %e,
+                    "Vector search failed, falling back to keyword search only"
+                );
+                keyword_res
+            }
+            (Ok(vector_res), Err(e)) => {
+                // Keyword search failed, use vector search only
+                tracing::warn!(
+                    error = %e,
+                    "Keyword search failed, using vector search only"
+                );
+                vector_res
+            }
+            (Err(vector_err), Err(keyword_err)) => {
+                // Both strategies failed
+                tracing::error!(
+                    vector_error = %vector_err,
+                    keyword_error = %keyword_err,
+                    "Both search strategies failed"
+                );
+                return Err(anyhow::anyhow!(
+                    "All search strategies failed: vector={}, keyword={}",
+                    vector_err,
+                    keyword_err
+                ));
+            }
+        };
 
         // Phase 4: Apply personalization if user_id provided
         let ranked_results = if let Some(user_id) = request.user_id {

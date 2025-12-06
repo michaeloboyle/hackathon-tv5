@@ -4,7 +4,10 @@
 //! SLA: 99.9% availability
 //! Latency target: <100ms p95
 
+mod routes;
+
 use actix_web::{web, App, HttpServer, HttpResponse};
+use media_gateway_core::{metrics_handler, MetricsMiddleware};
 use tracing::info;
 
 #[actix_web::main]
@@ -18,8 +21,11 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(|| {
         App::new()
+            .wrap(MetricsMiddleware)
             .route("/health", web::get().to(health_check))
+            .route("/metrics", web::get().to(metrics_handler))
             .route("/api/v1/status", web::get().to(api_status))
+            .configure(routes::configure)
     })
     .bind(("0.0.0.0", 8080))?
     .run()

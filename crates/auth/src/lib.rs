@@ -10,6 +10,8 @@ pub mod oauth;
 pub mod parental;
 pub mod password_reset;
 pub mod profile;
+pub mod rate_limit_admin_handlers;
+pub mod rate_limit_config;
 pub mod rbac;
 pub mod scopes;
 pub mod server;
@@ -44,6 +46,12 @@ pub use profile::{
     delete_current_user, get_current_user, update_current_user, upload_avatar, ProfileStorage,
     UserProfile,
 };
+pub use rate_limit_admin_handlers::{
+    delete_rate_limit, get_rate_limit, list_rate_limits, update_rate_limit,
+    DeleteRateLimitConfigQuery, ListRateLimitConfigsResponse, RateLimitConfigResponse,
+    UpdateRateLimitConfigRequest,
+};
+pub use rate_limit_config::{RateLimitConfig as RateLimitConfigV2, RateLimitConfigStore, UserTier};
 pub use rbac::{Permission, Role, RbacManager};
 pub use scopes::{Scope, ScopeManager};
 pub use server::start_server;

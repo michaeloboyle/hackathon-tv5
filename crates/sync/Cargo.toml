@@ -37,3 +37,4 @@ actix-web-actors = "4.3"
 parking_lot = "0.12"
 reqwest = { workspace = true }
 dashmap = "5.5"
+rusqlite = { version = "0.30", features = ["bundled"] }

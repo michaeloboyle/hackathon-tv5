@@ -77,6 +77,9 @@ pub enum AuditAction {
     ContentCreated,
     ContentUpdated,
     ContentDeleted,
+    Create,
+    Update,
+    Delete,
 }
 
 impl AuditAction {
@@ -98,6 +101,9 @@ impl AuditAction {
             AuditAction::ContentCreated => "CONTENT_CREATED",
             AuditAction::ContentUpdated => "CONTENT_UPDATED",
             AuditAction::ContentDeleted => "CONTENT_DELETED",
+            AuditAction::Create => "CREATE",
+            AuditAction::Update => "UPDATE",
+            AuditAction::Delete => "DELETE",
         }
     }
 
@@ -119,6 +125,9 @@ impl AuditAction {
             "CONTENT_CREATED" => Some(AuditAction::ContentCreated),
             "CONTENT_UPDATED" => Some(AuditAction::ContentUpdated),
             "CONTENT_DELETED" => Some(AuditAction::ContentDeleted),
+            "CREATE" => Some(AuditAction::Create),
+            "UPDATE" => Some(AuditAction::Update),
+            "DELETE" => Some(AuditAction::Delete),
             _ => None,
         }
     }

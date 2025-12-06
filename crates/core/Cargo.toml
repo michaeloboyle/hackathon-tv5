@@ -30,6 +30,7 @@ num_cpus = { workspace = true }
 prometheus = { workspace = true }
 actix-web = { workspace = true }
 base64 = "0.22"
+rdkafka = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

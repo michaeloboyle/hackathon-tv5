@@ -48,8 +48,9 @@ impl WebhookReceiver {
     ) -> WebhookResult<()> {
         let platform = handler.platform_id().to_string();
 
-        // Create rate limiter
-        let quota = Quota::per_minute(nonzero!(config.rate_limit));
+        // Create rate limiter with runtime value
+        let rate_limit_value = config.rate_limit;
+        let quota = Quota::per_minute(std::num::NonZeroU32::new(rate_limit_value).unwrap_or(nonzero!(100u32)));
         let rate_limiter = Arc::new(RateLimiter::direct(quota));
 
         // Store handler, config, and rate limiter
