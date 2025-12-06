@@ -1,15 +1,60 @@
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder, HttpRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
+use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 
 use crate::config::DiscoveryConfig;
 use crate::search::{HybridSearchService, SearchFilters, SearchRequest};
+
+/// JWT claims structure
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,  // user_id
+    exp: usize,   // expiration timestamp
+    iat: usize,   // issued at timestamp
+}
 
 /// Application state shared across all handlers
 pub struct AppState {
     pub config: Arc<DiscoveryConfig>,
     pub search_service: Arc<HybridSearchService>,
+    pub jwt_secret: String,
+}
+
+/// Extract user_id from JWT token in Authorization header
+fn extract_user_id(req: &HttpRequest, jwt_secret: &str) -> Option<Uuid> {
+    // Get Authorization header
+    let auth_header = req.headers().get("Authorization")?;
+    let auth_str = auth_header.to_str().ok()?;
+
+    // Extract Bearer token
+    let token = auth_str.strip_prefix("Bearer ")?;
+
+    // Decode and validate JWT
+    let decoding_key = DecodingKey::from_secret(jwt_secret.as_bytes());
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+
+    match decode::<Claims>(token, &decoding_key, &validation) {
+        Ok(token_data) => {
+            // Parse user_id from 'sub' claim
+            match Uuid::parse_str(&token_data.claims.sub) {
+                Ok(user_id) => {
+                    tracing::debug!("Extracted user_id from JWT: {}", user_id);
+                    Some(user_id)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse user_id from JWT sub claim: {}", e);
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("JWT validation failed: {}", e);
+            None
+        }
+    }
 }
 
 /// Health check response
@@ -61,9 +106,13 @@ pub struct RatingRange {
 
 /// POST /api/v1/search - Hybrid search endpoint
 async fn hybrid_search(
+    req: HttpRequest,
     data: web::Data<AppState>,
     payload: web::Json<HybridSearchRequest>,
 ) -> impl Responder {
+    // Extract user_id from JWT token
+    let user_id = extract_user_id(&req, &data.jwt_secret);
+
     let request = SearchRequest {
         query: payload.query.clone(),
         filters: payload.filters.as_ref().map(|f| SearchFilters {
@@ -74,7 +123,7 @@ async fn hybrid_search(
         }),
         page: payload.page.unwrap_or(1),
         page_size: payload.page_size.unwrap_or(data.config.search.page_size as u32),
-        user_id: None, // TODO: Extract from auth context
+        user_id, // Extracted from auth context
     };
 
     match data.search_service.search(request).await {
@@ -215,9 +264,17 @@ pub async fn start_server(
 
     tracing::info!("Starting Discovery Service on {}", bind_addr);
 
+    // Get JWT secret from environment
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| {
+            tracing::warn!("JWT_SECRET not set, using default (INSECURE for production)");
+            "default-jwt-secret-change-in-production".to_string()
+        });
+
     let app_state = web::Data::new(AppState {
         config: config.clone(),
         search_service,
+        jwt_secret,
     });
 
     HttpServer::new(move || {

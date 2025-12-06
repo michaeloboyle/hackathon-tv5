@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { MCPTool, RecommendationResult, UserContext } from '../types/index.js';
 import { config } from '../config.js';
+import { fetchWithRetry } from '../utils/retry.js';
 
 export const getRecommendationsSchema = z.object({
   basedOn: z
@@ -95,13 +96,21 @@ export async function executeGetRecommendations(
         : undefined,
     };
 
-    const response = await fetch(`${config.services.recommendation}/api/v1/recommendations/for-you`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+    const response = await fetchWithRetry(
+      `${config.services.recommendation}/api/v1/recommendations/for-you`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
       },
-      body: JSON.stringify(requestBody),
-    });
+      {
+        timeout: 100,
+        maxRetries: 2,
+        baseDelay: 50,
+      }
+    );
 
     if (!response.ok) {
       throw new Error(`Recommendation service returned ${response.status}`);

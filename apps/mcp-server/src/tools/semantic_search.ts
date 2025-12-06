@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { MCPTool, SearchResult } from '../types/index.js';
 import { config } from '../config.js';
+import { fetchWithRetry } from '../utils/retry.js';
 
 export const semanticSearchSchema = z.object({
   query: z.string().min(1).max(500).describe('Natural language search query'),
@@ -89,13 +90,21 @@ export async function executeSemanticSearch(
   const startTime = Date.now();
 
   try {
-    const response = await fetch(`${config.services.discovery}/api/v1/search/semantic`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+    const response = await fetchWithRetry(
+      `${config.services.discovery}/api/v1/search/semantic`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(input),
       },
-      body: JSON.stringify(input),
-    });
+      {
+        timeout: 100,
+        maxRetries: 2,
+        baseDelay: 50,
+      }
+    );
 
     if (!response.ok) {
       throw new Error(`Discovery service returned ${response.status}`);

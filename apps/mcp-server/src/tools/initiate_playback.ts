@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { MCPTool, UserContext } from '../types/index.js';
 import { config } from '../config.js';
+import { fetchWithRetry } from '../utils/retry.js';
 
 export const initiatePlaybackSchema = z.object({
   contentId: z.string().describe('Content ID to play'),
@@ -62,14 +63,22 @@ export async function executeInitiatePlayback(
   }
 
   try {
-    const response = await fetch(`${config.services.user}/api/v1/playback/initiate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-User-ID': userContext.userId,
+    const response = await fetchWithRetry(
+      `${config.services.user}/api/v1/playback/initiate`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-ID': userContext.userId,
+        },
+        body: JSON.stringify(input),
       },
-      body: JSON.stringify(input),
-    });
+      {
+        timeout: 100,
+        maxRetries: 2,
+        baseDelay: 50,
+      }
+    );
 
     if (!response.ok) {
       throw new Error(`Playback service returned ${response.status}`);

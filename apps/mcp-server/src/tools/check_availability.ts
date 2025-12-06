@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { MCPTool, PlatformAvailability } from '../types/index.js';
 import { config } from '../config.js';
+import { fetchWithRetry } from '../utils/retry.js';
 
 export const checkAvailabilitySchema = z.object({
   contentId: z.string().describe('Content ID to check availability for'),
@@ -54,13 +55,18 @@ export async function executeCheckAvailability(
       ...(input.platforms && { platforms: input.platforms.join(',') }),
     });
 
-    const response = await fetch(
+    const response = await fetchWithRetry(
       `${config.services.content}/api/v1/content/${input.contentId}/availability?${params}`,
       {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
         },
+      },
+      {
+        timeout: 100,
+        maxRetries: 2,
+        baseDelay: 50,
       }
     );
 

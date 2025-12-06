@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { MCPTool, ContentItem } from '../types/index.js';
 import { config } from '../config.js';
+import { fetchWithRetry } from '../utils/retry.js';
 
 export const getContentDetailsSchema = z.object({
   contentId: z.string().describe('Content ID'),
@@ -52,12 +53,20 @@ export async function executeGetContentDetails(
     const queryString = params.toString();
     const url = `${config.services.content}/api/v1/content/${input.contentId}${queryString ? `?${queryString}` : ''}`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
+    const response = await fetchWithRetry(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
       },
-    });
+      {
+        timeout: 100,
+        maxRetries: 2,
+        baseDelay: 50,
+      }
+    );
 
     if (!response.ok) {
       if (response.status === 404) {

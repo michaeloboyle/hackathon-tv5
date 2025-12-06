@@ -7,9 +7,11 @@ pub mod aggregator;
 pub mod deep_link;
 pub mod embedding;
 pub mod entity_resolution;
+pub mod events;
 pub mod genre_mapping;
 pub mod normalizer;
 pub mod pipeline;
+pub mod qdrant;
 pub mod rate_limit;
 pub mod repository;
 
@@ -20,8 +22,15 @@ pub use entity_resolution::EntityResolver;
 pub use genre_mapping::GenreMapper;
 pub use embedding::EmbeddingGenerator;
 pub use deep_link::{DeepLinkGenerator, DeepLinkResult};
+pub use qdrant::{QdrantClient, ContentPayload, ContentPoint, to_content_point, VECTOR_DIM};
 pub use rate_limit::RateLimitManager;
 pub use repository::{ContentRepository, PostgresContentRepository, ExpiringContent};
+pub use events::{
+    KafkaEventProducer, EventProducer, ContentEvent,
+    ContentIngestedEvent, ContentUpdatedEvent,
+    AvailabilityChangedEvent, MetadataEnrichedEvent,
+    EventError, EventResult,
+};
 
 /// Common error type for the ingestion pipeline
 #[derive(Debug, thiserror::Error)]

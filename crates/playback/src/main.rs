@@ -4,6 +4,7 @@
 //! SLA: 99.5% availability
 
 mod session;
+mod events;
 
 use actix_web::{web, App, HttpServer, HttpResponse, Responder};
 use session::{

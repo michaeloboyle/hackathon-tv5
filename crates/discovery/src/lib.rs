@@ -1,9 +1,11 @@
+pub mod cache;
 pub mod config;
 pub mod embedding;
 pub mod intent;
 pub mod search;
 pub mod server;
 
+pub use cache::{CacheError, CacheStats, RedisCache};
 pub use config::DiscoveryConfig;
 pub use embedding::EmbeddingService;
 pub use intent::{IntentParser, ParsedIntent};

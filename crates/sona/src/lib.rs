@@ -5,6 +5,7 @@
 
 pub mod profile;
 pub mod lora;
+pub mod lora_storage;
 pub mod recommendation;
 pub mod collaborative;
 pub mod content_based;
@@ -16,9 +17,11 @@ pub mod types;
 // Re-export key types
 pub use profile::{UserProfile, BuildUserPreferenceVector};
 pub use lora::{UserLoRAAdapter, UpdateUserLoRA, ComputeLoRAForward};
+pub use lora_storage::{LoRAStorage, LoRAAdapterMetadata, StorageStats};
 pub use recommendation::GenerateRecommendations;
 pub use diversity::ApplyDiversityFilter;
 pub use cold_start::HandleColdStartUser;
+pub use context::ContextAwareFilter;
 pub use types::*;
 
 use anyhow::Result;

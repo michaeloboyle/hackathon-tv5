@@ -66,6 +66,15 @@ pub enum AuthError {
 
     #[error("Device code expired")]
     DeviceCodeExpired,
+
+    #[error("Invalid user code")]
+    InvalidUserCode,
+
+    #[error("Device already approved")]
+    DeviceAlreadyApproved,
+
+    #[error("Unauthorized")]
+    Unauthorized,
 }
 
 impl ResponseError for AuthError {
@@ -141,6 +150,24 @@ impl ResponseError for AuthError {
                 HttpResponse::BadRequest().json(serde_json::json!({
                     "error": "expired_token",
                     "error_description": "Device code expired"
+                }))
+            }
+            AuthError::InvalidUserCode => {
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "invalid_grant",
+                    "error_description": "Invalid user code"
+                }))
+            }
+            AuthError::DeviceAlreadyApproved => {
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "invalid_grant",
+                    "error_description": "Device already approved"
+                }))
+            }
+            AuthError::Unauthorized => {
+                HttpResponse::Unauthorized().json(serde_json::json!({
+                    "error": "unauthorized",
+                    "error_description": "Authentication required"
                 }))
             }
             _ => {

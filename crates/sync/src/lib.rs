@@ -9,6 +9,7 @@
 /// - Device management and presence tracking
 /// - Watchlist and watch progress synchronization
 
+pub mod command_router;
 pub mod crdt;
 pub mod device;
 pub mod pubnub;
@@ -16,14 +17,18 @@ pub mod server;
 pub mod sync;
 pub mod websocket;
 
+pub use command_router::{Command, CommandAck, CommandRouter, DeviceCommandMessage};
 pub use crdt::{HLCTimestamp, HybridLogicalClock, LWWRegister, ORSet, ORSetDelta, ORSetOperation, PlaybackPosition, PlaybackState};
 pub use device::{
-    AudioCodec, CommandType, DeviceCapabilities, DeviceHandoff, DeviceInfo, DevicePlatform,
+    AudioCodec, CommandError, CommandType, DeviceCapabilities, DeviceHandoff, DeviceInfo, DevicePlatform,
     DeviceRegistry, DeviceType, HDRFormat, RemoteCommand, VideoResolution,
 };
 pub use pubnub::{DeviceMessage, PubNubClient, PubNubConfig, PubNubError, SyncMessage};
 pub use server::{start_server, ServerState};
-pub use sync::{ProgressSync, ProgressUpdate, WatchlistOperation, WatchlistSync, WatchlistUpdate};
+pub use sync::{
+    OfflineSyncQueue, ProgressSync, ProgressUpdate, QueueError, SyncOperation, SyncReport,
+    WatchlistOperation, WatchlistSync, WatchlistUpdate,
+};
 
 /// Initialize tracing for the sync service
 pub fn init_tracing() {

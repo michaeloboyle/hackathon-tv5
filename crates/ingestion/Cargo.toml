@@ -43,6 +43,9 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
+# Async trait for event producer
+async-trait = "0.1"
+
 # Rate limiting
 governor = "0.6"
 nonzero_ext = "0.3"
@@ -62,6 +65,9 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 
 # URL encoding
 urlencoding = "2.1"
+
+# Vector database
+qdrant-client = { workspace = true }
 
 [dev-dependencies]
 mockito = "1.2"

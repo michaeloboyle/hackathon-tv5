@@ -46,3 +46,12 @@ anyhow = { workspace = true }
 # Configuration
 config = { workspace = true }
 dotenvy = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Message queue
+rdkafka = { workspace = true }
+
+# Async traits
+async-trait = "0.1"

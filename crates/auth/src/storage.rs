@@ -160,10 +160,17 @@ impl AuthStorage {
     pub async fn store_device_code(&self, device_code: &str, device: &DeviceCode) -> Result<()> {
         let mut conn = self.get_conn().await?;
         let key = format!("devicecode:{}", device_code);
+        let user_code_key = format!("devicecode:user:{}", device.user_code);
         let value = serde_json::to_string(device)
             .map_err(|e| AuthError::Internal(format!("Serialization error: {}", e)))?;
 
-        conn.set_ex(&key, value, DEVICE_CODE_TTL_SECS)
+        // Store by device_code
+        conn.set_ex(&key, value.clone(), DEVICE_CODE_TTL_SECS)
+            .await
+            .map_err(|e| AuthError::Internal(format!("Redis SET error: {}", e)))?;
+
+        // Store mapping from user_code to device_code for approval lookup
+        conn.set_ex(&user_code_key, device_code, DEVICE_CODE_TTL_SECS)
             .await
             .map_err(|e| AuthError::Internal(format!("Redis SET error: {}", e)))?;
 
@@ -209,9 +216,34 @@ impl AuthStorage {
         Ok(())
     }
 
+    /// Get device code by user_code
+    pub async fn get_device_code_by_user_code(&self, user_code: &str) -> Result<Option<DeviceCode>> {
+        let mut conn = self.get_conn().await?;
+        let user_code_key = format!("devicecode:user:{}", user_code);
+
+        // Get device_code from user_code mapping
+        let device_code: Option<String> = conn.get(&user_code_key)
+            .await
+            .map_err(|e| AuthError::Internal(format!("Redis GET error: {}", e)))?;
+
+        match device_code {
+            Some(dc) => self.get_device_code(&dc).await,
+            None => Ok(None),
+        }
+    }
+
     /// Delete device code
     pub async fn delete_device_code(&self, device_code: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
+
+        // Get the device to find user_code for cleanup
+        if let Some(device) = self.get_device_code(device_code).await? {
+            let user_code_key = format!("devicecode:user:{}", device.user_code);
+            let _: () = conn.del(&user_code_key)
+                .await
+                .map_err(|e| AuthError::Internal(format!("Redis DEL error: {}", e)))?;
+        }
+
         let key = format!("devicecode:{}", device_code);
         conn.del(&key)
             .await

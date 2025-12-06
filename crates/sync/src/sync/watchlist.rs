@@ -3,9 +3,11 @@
 /// Supports add/remove operations with add-wins conflict resolution
 
 use crate::crdt::{HLCTimestamp, HybridLogicalClock, ORSet, ORSetDelta, ORSetOperation};
+use crate::sync::publisher::{PublisherError, SyncPublisher};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use parking_lot::RwLock;
+use tracing::{debug, error, info};
 
 /// Watchlist sync manager
 pub struct WatchlistSync {
@@ -20,6 +22,9 @@ pub struct WatchlistSync {
 
     /// HLC for timestamp generation
     hlc: Arc<HybridLogicalClock>,
+
+    /// Optional publisher for real-time sync
+    publisher: Option<Arc<dyn SyncPublisher>>,
 }
 
 impl WatchlistSync {
@@ -30,7 +35,32 @@ impl WatchlistSync {
             device_id,
             or_set: Arc::new(RwLock::new(ORSet::new())),
             hlc: Arc::new(HybridLogicalClock::new()),
+            publisher: None,
         }
+    }
+
+    /// Create new watchlist sync manager with publisher
+    pub fn new_with_publisher(
+        user_id: String,
+        device_id: String,
+        publisher: Arc<dyn SyncPublisher>,
+    ) -> Self {
+        info!(
+            "Creating WatchlistSync with publisher for user {} on device {}",
+            user_id, device_id
+        );
+        Self {
+            user_id,
+            device_id,
+            or_set: Arc::new(RwLock::new(ORSet::new())),
+            hlc: Arc::new(HybridLogicalClock::new()),
+            publisher: Some(publisher),
+        }
+    }
+
+    /// Set publisher for this sync manager
+    pub fn set_publisher(&mut self, publisher: Arc<dyn SyncPublisher>) {
+        self.publisher = Some(publisher);
     }
 
     /// Add content to watchlist
@@ -39,13 +69,27 @@ impl WatchlistSync {
         let mut set = self.or_set.write();
         let unique_tag = set.add(content_id.clone(), timestamp, self.device_id.clone());
 
-        WatchlistUpdate {
+        let update = WatchlistUpdate {
             operation: WatchlistOperation::Add,
-            content_id,
+            content_id: content_id.clone(),
             unique_tag,
             timestamp,
             device_id: self.device_id.clone(),
+        };
+
+        // Publish update if publisher is available
+        if let Some(ref publisher) = self.publisher {
+            let publisher = Arc::clone(publisher);
+            let update_clone = update.clone();
+            tokio::spawn(async move {
+                if let Err(e) = publisher.publish_watchlist_update(update_clone).await {
+                    error!("Failed to publish watchlist add update: {}", e);
+                }
+            });
         }
+
+        debug!("Added content {} to watchlist", content_id);
+        update
     }
 
     /// Remove content from watchlist
@@ -65,7 +109,8 @@ impl WatchlistSync {
         set.remove(content_id);
 
         // Return removal updates for each tag
-        tags.into_iter()
+        let updates: Vec<WatchlistUpdate> = tags
+            .into_iter()
             .map(|tag| WatchlistUpdate {
                 operation: WatchlistOperation::Remove,
                 content_id: content_id.to_string(),
@@ -73,7 +118,24 @@ impl WatchlistSync {
                 timestamp,
                 device_id: self.device_id.clone(),
             })
-            .collect()
+            .collect();
+
+        // Publish updates if publisher is available
+        if let Some(ref publisher) = self.publisher {
+            let publisher = Arc::clone(publisher);
+            let updates_clone = updates.clone();
+            let content_id = content_id.to_string();
+            tokio::spawn(async move {
+                for update in updates_clone {
+                    if let Err(e) = publisher.publish_watchlist_update(update).await {
+                        error!("Failed to publish watchlist remove update: {}", e);
+                    }
+                }
+            });
+        }
+
+        debug!("Removed content {} from watchlist", content_id);
+        updates
     }
 
     /// Get all items in watchlist

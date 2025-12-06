@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { MCPTool, Genre } from '../types/index.js';
 import { config } from '../config.js';
+import { fetchWithRetry } from '../utils/retry.js';
 
 export const getGenresSchema = z.object({
   mediaType: z.enum(['movie', 'tv', 'all']).default('all').describe('Media type filter'),
@@ -37,12 +38,20 @@ export async function executeGetGenres(
       mediaType: input.mediaType,
     });
 
-    const response = await fetch(`${config.services.content}/api/v1/genres?${params}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
+    const response = await fetchWithRetry(
+      `${config.services.content}/api/v1/genres?${params}`,
+      {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
       },
-    });
+      {
+        timeout: 100,
+        maxRetries: 2,
+        baseDelay: 50,
+      }
+    );
 
     if (!response.ok) {
       throw new Error(`Content service returned ${response.status}`);

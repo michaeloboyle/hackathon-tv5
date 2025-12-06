@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { MCPTool, Device, UserContext } from '../types/index.js';
 import { config } from '../config.js';
+import { fetchWithRetry } from '../utils/retry.js';
 
 export const listDevicesSchema = z.object({
   includeOffline: z.boolean().default(false).describe('Include offline devices'),
@@ -41,7 +42,7 @@ export async function executeListDevices(
       includeOffline: input.includeOffline.toString(),
     });
 
-    const response = await fetch(
+    const response = await fetchWithRetry(
       `${config.services.user}/api/v1/user/devices?${params}`,
       {
         method: 'GET',
@@ -49,6 +50,11 @@ export async function executeListDevices(
           'Content-Type': 'application/json',
           'X-User-ID': userContext.userId,
         },
+      },
+      {
+        timeout: 100,
+        maxRetries: 2,
+        baseDelay: 50,
       }
     );
 

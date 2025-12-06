@@ -3,10 +3,12 @@
 /// Tracks playback position with last-writer-wins conflict resolution
 
 use crate::crdt::{HLCTimestamp, HybridLogicalClock, PlaybackPosition, PlaybackState};
+use crate::sync::publisher::{PublisherError, SyncPublisher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
+use tracing::{debug, error, info};
 
 /// Progress sync manager
 pub struct ProgressSync {
@@ -21,6 +23,9 @@ pub struct ProgressSync {
 
     /// HLC for timestamp generation
     hlc: Arc<HybridLogicalClock>,
+
+    /// Optional publisher for real-time sync
+    publisher: Option<Arc<dyn SyncPublisher>>,
 }
 
 impl ProgressSync {
@@ -31,7 +36,32 @@ impl ProgressSync {
             device_id,
             positions: Arc::new(RwLock::new(HashMap::new())),
             hlc: Arc::new(HybridLogicalClock::new()),
+            publisher: None,
         }
+    }
+
+    /// Create new progress sync manager with publisher
+    pub fn new_with_publisher(
+        user_id: String,
+        device_id: String,
+        publisher: Arc<dyn SyncPublisher>,
+    ) -> Self {
+        info!(
+            "Creating ProgressSync with publisher for user {} on device {}",
+            user_id, device_id
+        );
+        Self {
+            user_id,
+            device_id,
+            positions: Arc::new(RwLock::new(HashMap::new())),
+            hlc: Arc::new(HybridLogicalClock::new()),
+            publisher: Some(publisher),
+        }
+    }
+
+    /// Set publisher for this sync manager
+    pub fn set_publisher(&mut self, publisher: Arc<dyn SyncPublisher>) {
+        self.publisher = Some(publisher);
     }
 
     /// Update watch progress for content
@@ -56,14 +86,35 @@ impl ProgressSync {
         let mut positions = self.positions.write();
         positions.insert(content_id.clone(), position.clone());
 
-        ProgressUpdate {
-            content_id,
+        let update = ProgressUpdate {
+            content_id: content_id.clone(),
             position_seconds,
             duration_seconds,
             state,
             timestamp,
             device_id: self.device_id.clone(),
+        };
+
+        // Publish update if publisher is available
+        if let Some(ref publisher) = self.publisher {
+            let publisher = Arc::clone(publisher);
+            let update_clone = update.clone();
+            tokio::spawn(async move {
+                if let Err(e) = publisher.publish_progress_update(update_clone).await {
+                    error!("Failed to publish progress update: {}", e);
+                }
+            });
         }
+
+        debug!(
+            "Updated progress for content {}: {}s/{}s ({:.1}%)",
+            content_id,
+            position_seconds,
+            duration_seconds,
+            update.completion_percent() * 100.0
+        );
+
+        update
     }
 
     /// Get progress for content

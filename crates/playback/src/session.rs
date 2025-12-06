@@ -3,8 +3,13 @@
 use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use std::sync::Arc;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+
+use crate::events::{
+    PlaybackEventProducer, SessionCreatedEvent, PositionUpdatedEvent, SessionEndedEvent
+};
 
 const SESSION_TTL_SECS: u64 = 86400; // 24 hours
 
@@ -69,18 +74,51 @@ pub struct UpdatePositionRequest {
 /// Session manager using Redis storage
 pub struct SessionManager {
     client: Client,
+    sync_service_url: String,
+    http_client: reqwest::Client,
+    event_producer: Arc<dyn PlaybackEventProducer>,
 }
 
 impl SessionManager {
-    pub fn new(redis_url: &str) -> Result<Self, redis::RedisError> {
+    pub fn new(
+        redis_url: &str,
+        sync_service_url: String,
+        event_producer: Arc<dyn PlaybackEventProducer>,
+    ) -> Result<Self, redis::RedisError> {
         let client = Client::open(redis_url)?;
-        Ok(Self { client })
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        Ok(Self {
+            client,
+            sync_service_url,
+            http_client,
+            event_producer,
+        })
     }
 
     pub fn from_env() -> Result<Self, redis::RedisError> {
-        let url = std::env::var("REDIS_URL")
+        let redis_url = std::env::var("REDIS_URL")
             .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        Self::new(&url)
+        let sync_service_url = std::env::var("SYNC_SERVICE_URL")
+            .unwrap_or_else(|_| "http://localhost:8083".to_string());
+
+        // Initialize Kafka producer
+        let event_producer: Arc<dyn PlaybackEventProducer> =
+            match crate::events::KafkaPlaybackProducer::from_env() {
+                Ok(producer) => {
+                    tracing::info!("Kafka event producer initialized");
+                    Arc::new(producer)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to initialize Kafka producer, using no-op: {}", e);
+                    Arc::new(crate::events::NoOpProducer)
+                }
+            };
+
+        Self::new(&redis_url, sync_service_url, event_producer)
     }
 
     async fn get_conn(&self) -> Result<MultiplexedConnection, redis::RedisError> {
@@ -97,11 +135,11 @@ impl SessionManager {
             id: Uuid::new_v4(),
             user_id: request.user_id,
             content_id: request.content_id,
-            device_id: request.device_id,
+            device_id: request.device_id.clone(),
             position_seconds: 0,
             duration_seconds: request.duration_seconds,
             playback_state: PlaybackState::Playing,
-            quality: request.quality.unwrap_or_default(),
+            quality: request.quality.clone().unwrap_or_default(),
             started_at: now,
             updated_at: now,
         };
@@ -122,6 +160,24 @@ impl SessionManager {
         conn.expire(&user_key, SESSION_TTL_SECS as i64)
             .await
             .map_err(|e| SessionError::Storage(e.to_string()))?;
+
+        // Publish session created event
+        let event = SessionCreatedEvent {
+            session_id: session.id,
+            user_id: session.user_id,
+            content_id: session.content_id,
+            device_id: request.device_id,
+            duration_seconds: request.duration_seconds,
+            quality: format!("{:?}", request.quality.unwrap_or_default()),
+            timestamp: now,
+        };
+
+        let producer = self.event_producer.clone();
+        tokio::spawn(async move {
+            if let Err(e) = producer.publish_session_created(event).await {
+                tracing::error!("Failed to publish session created event: {}", e);
+            }
+        });
 
         Ok(session)
     }
@@ -185,7 +241,62 @@ impl SessionManager {
             .await
             .map_err(|e| SessionError::Storage(e.to_string()))?;
 
+        // Fire-and-forget call to sync service
+        self.notify_sync_service(&session).await;
+
+        // Publish position updated event
+        let event = PositionUpdatedEvent {
+            session_id: session.id,
+            user_id: session.user_id,
+            content_id: session.content_id,
+            device_id: session.device_id.clone(),
+            position_seconds: session.position_seconds,
+            playback_state: format!("{:?}", session.playback_state),
+            timestamp: session.updated_at,
+        };
+
+        let producer = self.event_producer.clone();
+        tokio::spawn(async move {
+            if let Err(e) = producer.publish_position_updated(event).await {
+                tracing::error!("Failed to publish position updated event: {}", e);
+            }
+        });
+
         Ok(session)
+    }
+
+    /// Notify sync service of position update (fire-and-forget)
+    async fn notify_sync_service(&self, session: &PlaybackSession) {
+        let progress_update = serde_json::json!({
+            "user_id": session.user_id,
+            "content_id": session.content_id,
+            "position_seconds": session.position_seconds,
+            "device_id": session.device_id,
+            "timestamp": session.updated_at.to_rfc3339(),
+        });
+
+        let url = format!("{}/api/v1/sync/progress", self.sync_service_url);
+
+        // Fire-and-forget HTTP call
+        let client = self.http_client.clone();
+        tokio::spawn(async move {
+            match client
+                .post(&url)
+                .json(&progress_update)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::debug!("Sync service notified successfully");
+                }
+                Ok(resp) => {
+                    tracing::warn!("Sync service responded with status: {}", resp.status());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to notify sync service: {}", e);
+                }
+            }
+        });
     }
 
     /// Delete session
@@ -200,12 +311,38 @@ impl SessionManager {
             .await
             .map_err(|e| SessionError::Storage(e.to_string()))?;
 
-        // Remove from user index
+        // Remove from user index and publish session ended event
         if let Some(s) = session {
             let user_key = format!("user:{}:sessions", s.user_id);
             conn.srem(&user_key, session_id.to_string())
                 .await
                 .map_err(|e| SessionError::Storage(e.to_string()))?;
+
+            // Calculate completion rate
+            let completion_rate = if s.duration_seconds > 0 {
+                (s.position_seconds as f32 / s.duration_seconds as f32).min(1.0)
+            } else {
+                0.0
+            };
+
+            // Publish session ended event
+            let event = SessionEndedEvent {
+                session_id: s.id,
+                user_id: s.user_id,
+                content_id: s.content_id,
+                device_id: s.device_id,
+                final_position_seconds: s.position_seconds,
+                duration_seconds: s.duration_seconds,
+                completion_rate,
+                timestamp: Utc::now(),
+            };
+
+            let producer = self.event_producer.clone();
+            tokio::spawn(async move {
+                if let Err(e) = producer.publish_session_ended(event).await {
+                    tracing::error!("Failed to publish session ended event: {}", e);
+                }
+            });
         }
 
         Ok(())

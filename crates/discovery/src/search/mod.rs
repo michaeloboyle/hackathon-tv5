@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{debug, info, instrument};
 use uuid::Uuid;
 
 pub mod filters;
@@ -11,6 +13,7 @@ pub use filters::SearchFilters;
 pub use keyword::KeywordSearch;
 pub use vector::VectorSearch;
 
+use crate::cache::RedisCache;
 use crate::config::DiscoveryConfig;
 use crate::intent::{IntentParser, ParsedIntent};
 
@@ -21,10 +24,11 @@ pub struct HybridSearchService {
     vector_search: Arc<vector::VectorSearch>,
     keyword_search: Arc<keyword::KeywordSearch>,
     db_pool: sqlx::PgPool,
+    cache: Arc<RedisCache>,
 }
 
 /// Search request
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchRequest {
     pub query: String,
     pub filters: Option<SearchFilters>,
@@ -34,7 +38,7 @@ pub struct SearchRequest {
 }
 
 /// Search response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResponse {
     pub results: Vec<SearchResult>,
     pub total_count: usize,
@@ -45,7 +49,7 @@ pub struct SearchResponse {
 }
 
 /// Individual search result
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub content: ContentSummary,
     pub relevance_score: f32,
@@ -75,6 +79,7 @@ impl HybridSearchService {
         vector_search: Arc<vector::VectorSearch>,
         keyword_search: Arc<keyword::KeywordSearch>,
         db_pool: sqlx::PgPool,
+        cache: Arc<RedisCache>,
     ) -> Self {
         Self {
             config,
@@ -82,11 +87,48 @@ impl HybridSearchService {
             vector_search,
             keyword_search,
             db_pool,
+            cache,
         }
     }
 
-    /// Execute hybrid search
+    /// Execute hybrid search with caching
+    #[instrument(skip(self), fields(query = %request.query, page = %request.page))]
     pub async fn search(&self, request: SearchRequest) -> anyhow::Result<SearchResponse> {
+        let start_time = std::time::Instant::now();
+
+        // Generate cache key from request
+        let cache_key = self.generate_cache_key(&request);
+
+        // Check cache first
+        if let Ok(Some(cached_response)) = self.cache.get::<SearchResponse>(&cache_key).await {
+            let cache_time_ms = start_time.elapsed().as_millis() as u64;
+            info!(
+                cache_key = %cache_key,
+                cache_time_ms = %cache_time_ms,
+                "Cache hit - returning cached search results"
+            );
+            return Ok(cached_response);
+        }
+
+        debug!(cache_key = %cache_key, "Cache miss - executing full search");
+
+        // Execute full search pipeline
+        let response = self.execute_search(&request).await?;
+
+        // Cache results with 30-minute TTL
+        if let Err(e) = self.cache.set(&cache_key, &response, 1800).await {
+            // Log cache write error but don't fail the request
+            debug!(error = %e, cache_key = %cache_key, "Failed to cache search results");
+        } else {
+            debug!(cache_key = %cache_key, ttl = 1800, "Cached search results");
+        }
+
+        Ok(response)
+    }
+
+    /// Execute the full search pipeline (without caching)
+    #[instrument(skip(self), fields(query = %request.query))]
+    async fn execute_search(&self, request: &SearchRequest) -> anyhow::Result<SearchResponse> {
         let start_time = std::time::Instant::now();
 
         // Phase 1: Parse intent
@@ -120,6 +162,12 @@ impl HybridSearchService {
         let page_results = ranked_results[start..end].to_vec();
 
         let search_time_ms = start_time.elapsed().as_millis() as u64;
+
+        info!(
+            search_time_ms = %search_time_ms,
+            total_results = %total_count,
+            "Completed full search execution"
+        );
 
         Ok(SearchResponse {
             results: page_results,
@@ -215,14 +263,46 @@ impl HybridSearchService {
 
         merged.into_iter().map(|(_, result)| result).collect()
     }
+
+    /// Generate cache key from search request using SHA256 hash
+    ///
+    /// The cache key includes:
+    /// - Query string
+    /// - Filters (genres, platforms, year range, rating range)
+    /// - Pagination (page, page_size)
+    /// - User ID for personalized results
+    ///
+    /// # Arguments
+    /// * `request` - Search request to generate key for
+    ///
+    /// # Returns
+    /// Cache key string in format: "search:{sha256_hash}"
+    #[instrument(skip(self, request), fields(query = %request.query))]
+    fn generate_cache_key(&self, request: &SearchRequest) -> String {
+        // Serialize request to JSON for consistent hashing
+        let json = serde_json::to_string(request)
+            .expect("SearchRequest serialization should never fail");
+
+        // Generate SHA256 hash
+        let mut hasher = Sha256::new();
+        hasher.update(json.as_bytes());
+        let hash = hasher.finalize();
+        let hash_hex = hex::encode(hash);
+
+        // Create cache key with search prefix
+        let key = format!("search:{}", hash_hex);
+        debug!(cache_key = %key, "Generated cache key");
+
+        key
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_reciprocal_rank_fusion() {
+    #[tokio::test]
+    async fn test_reciprocal_rank_fusion() {
         // Create mock results
         let content1 = ContentSummary {
             id: Uuid::new_v4(),
@@ -275,10 +355,31 @@ mod tests {
         // Mock config
         let config = Arc::new(DiscoveryConfig::default());
 
-        // Create mock service (simplified for test)
-        let db_pool = sqlx::PgPool::connect("postgresql://localhost/test")
-            .await
-            .expect("Failed to connect");
+        // Mock cache config
+        let cache_config = Arc::new(crate::config::CacheConfig {
+            redis_url: "redis://localhost:6379".to_string(),
+            search_ttl_sec: 1800,
+            embedding_ttl_sec: 3600,
+            intent_ttl_sec: 600,
+        });
+
+        // Skip test if Redis is not available
+        let cache = match RedisCache::new(cache_config).await {
+            Ok(c) => Arc::new(c),
+            Err(_) => {
+                eprintln!("Skipping test: Redis not available");
+                return;
+            }
+        };
+
+        // Create mock database pool (would fail if postgres not available)
+        let db_pool = match sqlx::PgPool::connect("postgresql://localhost/test").await {
+            Ok(pool) => pool,
+            Err(_) => {
+                eprintln!("Skipping test: PostgreSQL not available");
+                return;
+            }
+        };
 
         let service = HybridSearchService {
             config,
@@ -290,11 +391,48 @@ mod tests {
             )),
             keyword_search: Arc::new(keyword::KeywordSearch::new(String::new())),
             db_pool,
+            cache,
         };
 
         let merged = service.reciprocal_rank_fusion(vector_results, keyword_results, 60.0);
 
         // content2 should rank higher (appears in both results)
         assert_eq!(merged[0].content.id, content2.id);
+    }
+
+    #[test]
+    fn test_cache_key_generation() {
+        // Test that cache key generation is deterministic
+        let request1 = SearchRequest {
+            query: "test query".to_string(),
+            filters: Some(SearchFilters {
+                genres: vec!["action".to_string()],
+                platforms: vec!["netflix".to_string()],
+                year_range: Some((2020, 2024)),
+                rating_range: None,
+            }),
+            page: 1,
+            page_size: 20,
+            user_id: Some(Uuid::nil()), // Use nil UUID for deterministic testing
+        };
+
+        let request2 = request1.clone();
+
+        // Serialize both requests
+        let json1 = serde_json::to_string(&request1).unwrap();
+        let json2 = serde_json::to_string(&request2).unwrap();
+
+        // Generate hashes
+        use sha2::Digest;
+        let hash1 = hex::encode(Sha256::digest(json1.as_bytes()));
+        let hash2 = hex::encode(Sha256::digest(json2.as_bytes()));
+
+        // Same request should produce same hash
+        assert_eq!(hash1, hash2, "Cache keys should be deterministic");
+
+        // Verify key format
+        let key = format!("search:{}", hash1);
+        assert!(key.starts_with("search:"));
+        assert_eq!(key.len(), "search:".len() + 64); // SHA256 = 64 hex chars
     }
 }

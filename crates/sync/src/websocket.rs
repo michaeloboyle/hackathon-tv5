@@ -2,9 +2,12 @@
 ///
 /// Manages WebSocket connections with clients for bidirectional sync
 
+use crate::command_router::{Command, CommandRouter};
+use crate::device::CommandType;
 use actix::{Actor, ActorContext, AsyncContext, Handler, StreamHandler};
 use actix_web_actors::ws;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// WebSocket connection heartbeat interval (30 seconds)
@@ -23,6 +26,9 @@ pub struct SyncWebSocket {
 
     /// Last heartbeat timestamp
     hb: Instant,
+
+    /// Command router for routing device commands
+    command_router: Option<Arc<CommandRouter>>,
 }
 
 impl SyncWebSocket {
@@ -32,6 +38,21 @@ impl SyncWebSocket {
             user_id,
             device_id,
             hb: Instant::now(),
+            command_router: None,
+        }
+    }
+
+    /// Create new WebSocket session with command router
+    pub fn with_command_router(
+        user_id: String,
+        device_id: String,
+        command_router: Arc<CommandRouter>,
+    ) -> Self {
+        Self {
+            user_id,
+            device_id,
+            hb: Instant::now(),
+            command_router: Some(command_router),
         }
     }
 
@@ -68,9 +89,54 @@ impl SyncWebSocket {
                 tracing::trace!("Received heartbeat from {}", self.device_id);
                 self.hb = Instant::now();
             }
-            WebSocketMessage::DeviceCommand { .. } => {
-                tracing::debug!("Received device command from {}", self.device_id);
-                // In production: route to target device
+            WebSocketMessage::DeviceCommand {
+                target_device_id,
+                command_type,
+                payload,
+            } => {
+                tracing::debug!(
+                    "Received device command from {} to {}: {:?}",
+                    self.device_id,
+                    target_device_id,
+                    command_type
+                );
+
+                // Route command through CommandRouter if available
+                if let Some(router) = &self.command_router {
+                    let command = Command::new(
+                        command_type.clone(),
+                        self.device_id.clone(),
+                        target_device_id.clone(),
+                    )
+                    .with_payload(payload.unwrap_or_else(|| serde_json::json!({})));
+
+                    // Spawn async task to route command
+                    let router = router.clone();
+                    let device_id = self.device_id.clone();
+                    actix::spawn(async move {
+                        match router.route_command(command).await {
+                            Ok(command_id) => {
+                                tracing::info!(
+                                    "Successfully routed command {} from {}",
+                                    command_id,
+                                    device_id
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to route command from {}: {}",
+                                    device_id,
+                                    e
+                                );
+                            }
+                        }
+                    });
+                } else {
+                    tracing::warn!(
+                        "Command router not configured for device {}",
+                        self.device_id
+                    );
+                }
             }
             WebSocketMessage::Ping => {
                 ctx.pong(b"");
@@ -166,7 +232,9 @@ pub enum WebSocketMessage {
     #[serde(rename = "device_command")]
     DeviceCommand {
         target_device_id: String,
-        command: String,
+        command_type: CommandType,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
     },
 
     #[serde(rename = "ping")]

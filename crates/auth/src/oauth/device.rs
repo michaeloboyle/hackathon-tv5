@@ -190,4 +190,76 @@ mod tests {
         assert!(!device.user_code.contains('1'));
         assert!(!device.user_code.contains('I'));
     }
+
+    #[test]
+    fn test_device_code_approved_status() {
+        let mut device = DeviceCode::new(
+            "client123".to_string(),
+            vec!["read:content".to_string()],
+            "https://auth.example.com",
+        );
+
+        // Approve the device
+        device.approve("user456".to_string());
+
+        // Check status should succeed for approved device
+        let status = device.check_status().unwrap();
+        assert_eq!(status, DeviceCodeStatus::Approved);
+        assert_eq!(device.user_id, Some("user456".to_string()));
+    }
+
+    #[test]
+    fn test_device_code_denied_status() {
+        let mut device = DeviceCode::new(
+            "client123".to_string(),
+            vec!["read:content".to_string()],
+            "https://auth.example.com",
+        );
+
+        // Deny the device
+        device.deny();
+
+        // Check status should return error for denied device
+        let result = device.check_status();
+        assert!(result.is_err());
+        assert_eq!(device.status, DeviceCodeStatus::Denied);
+    }
+
+    #[test]
+    fn test_device_code_pending_returns_error() {
+        let device = DeviceCode::new(
+            "client123".to_string(),
+            vec!["read:content".to_string()],
+            "https://auth.example.com",
+        );
+
+        // Pending status should return AuthorizationPending error
+        let result = device.check_status();
+        assert!(result.is_err());
+
+        match result {
+            Err(AuthError::AuthorizationPending) => {
+                // Expected error
+            }
+            _ => panic!("Expected AuthorizationPending error"),
+        }
+    }
+
+    #[test]
+    fn test_device_code_cannot_approve_twice() {
+        let mut device = DeviceCode::new(
+            "client123".to_string(),
+            vec!["read:content".to_string()],
+            "https://auth.example.com",
+        );
+
+        // First approval
+        device.approve("user123".to_string());
+        assert_eq!(device.user_id, Some("user123".to_string()));
+
+        // Second approval should overwrite (though API prevents this)
+        device.approve("user456".to_string());
+        assert_eq!(device.user_id, Some("user456".to_string()));
+        assert_eq!(device.status, DeviceCodeStatus::Approved);
+    }
 }

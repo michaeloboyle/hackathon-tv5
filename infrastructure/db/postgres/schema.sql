@@ -201,6 +201,20 @@ CREATE TABLE rate_limits (
     window_start TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- LoRA Adapters (SONA personalization)
+CREATE TABLE lora_adapters (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    adapter_name VARCHAR(100) NOT NULL DEFAULT 'default',
+    version INTEGER NOT NULL DEFAULT 1,
+    weights BYTEA NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    training_iterations INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, adapter_name, version)
+);
+
 -- Indexes
 CREATE INDEX idx_content_type ON content(content_type);
 CREATE INDEX idx_content_release_date ON content(release_date);
@@ -214,3 +228,6 @@ CREATE INDEX idx_watchlist_user ON user_watchlist(user_id) WHERE NOT is_removed;
 CREATE INDEX idx_watch_progress_user ON watch_progress(user_id);
 CREATE INDEX idx_credits_content ON credits(content_id);
 CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_lora_adapters_user_name_version ON lora_adapters(user_id, adapter_name, version DESC);
+CREATE INDEX idx_lora_adapters_user_updated ON lora_adapters(user_id, updated_at DESC);
+CREATE INDEX idx_lora_adapters_created ON lora_adapters(created_at DESC);

@@ -262,7 +262,7 @@ async fn exchange_device_code(form: &TokenRequest, state: &AppState) -> Result<H
         .await?
         .ok_or(AuthError::DeviceCodeNotFound)?;
 
-    // Check status
+    // Check status - will error if pending
     device.check_status()?;
 
     let user_id = device.user_id.clone().ok_or(AuthError::Internal("User ID not found".to_string()))?;
@@ -281,6 +281,16 @@ async fn exchange_device_code(form: &TokenRequest, state: &AppState) -> Result<H
         vec!["free_user".to_string()],
         device.scopes.clone(),
     )?;
+
+    // Create session
+    let refresh_claims = state.jwt_manager.verify_refresh_token(&refresh_token)?;
+    state
+        .session_manager
+        .create_session(user_id.clone(), refresh_claims.jti, None)
+        .await?;
+
+    // Delete device code after successful token issuance
+    state.storage.delete_device_code(device_code).await?;
 
     Ok(HttpResponse::Ok().json(TokenResponse {
         access_token,
@@ -355,6 +365,56 @@ async fn device_authorization(
     Ok(HttpResponse::Ok().json(response))
 }
 
+#[derive(Debug, Deserialize)]
+struct DeviceApprovalRequest {
+    user_code: String,
+}
+
+#[post("/auth/device/approve")]
+async fn approve_device(
+    req: web::Json<DeviceApprovalRequest>,
+    auth_header: web::Header<actix_web::http::header::Authorization<actix_web::http::header::authorization::Bearer>>,
+    state: Data<AppState>,
+) -> Result<impl Responder> {
+    // Extract and verify JWT token
+    let token = auth_header.as_ref().token();
+    let claims = state.jwt_manager.verify_access_token(token)?;
+
+    // Check if token is revoked
+    if state.session_manager.is_token_revoked(&claims.jti).await? {
+        return Err(AuthError::Unauthorized);
+    }
+
+    let user_id = claims.sub;
+
+    // Look up device code by user_code
+    let mut device = state.storage
+        .get_device_code_by_user_code(&req.user_code)
+        .await?
+        .ok_or(AuthError::InvalidUserCode)?;
+
+    // Verify device is in Pending state
+    if device.is_expired() {
+        state.storage.delete_device_code(&device.device_code).await?;
+        return Err(AuthError::DeviceCodeExpired);
+    }
+
+    if device.status != crate::oauth::device::DeviceCodeStatus::Pending {
+        return Err(AuthError::DeviceAlreadyApproved);
+    }
+
+    // Approve device with user_id binding
+    device.approve(user_id);
+
+    // Update Redis with new state
+    state.storage.update_device_code(&device.device_code, &device).await?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Device authorization approved",
+        "user_code": device.user_code
+    })))
+}
+
 #[get("/auth/device/poll")]
 async fn device_poll(
     query: web::Query<std::collections::HashMap<String, String>>,
@@ -369,12 +429,44 @@ async fn device_poll(
         .await?
         .ok_or(AuthError::DeviceCodeNotFound)?;
 
+    // Check status - this will return error if still pending
     device.check_status()?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "status": "approved",
-        "message": "Device authorization approved"
-    })))
+    // If we reach here, device is approved - generate tokens
+    let user_id = device.user_id.clone().ok_or(AuthError::Internal("User ID not found".to_string()))?;
+
+    // Generate tokens
+    let access_token = state.jwt_manager.create_access_token(
+        user_id.clone(),
+        Some(format!("user{}@example.com", user_id)),
+        vec!["free_user".to_string()],
+        device.scopes.clone(),
+    )?;
+
+    let refresh_token = state.jwt_manager.create_refresh_token(
+        user_id.clone(),
+        Some(format!("user{}@example.com", user_id)),
+        vec!["free_user".to_string()],
+        device.scopes.clone(),
+    )?;
+
+    // Create session
+    let refresh_claims = state.jwt_manager.verify_refresh_token(&refresh_token)?;
+    state
+        .session_manager
+        .create_session(user_id.clone(), refresh_claims.jti, None)
+        .await?;
+
+    // Delete device code after successful token issuance
+    state.storage.delete_device_code(device_code).await?;
+
+    Ok(HttpResponse::Ok().json(TokenResponse {
+        access_token,
+        refresh_token,
+        token_type: "Bearer".to_string(),
+        expires_in: 3600,
+        scope: device.scopes.join(" "),
+    }))
 }
 
 // ============================================================================
@@ -407,6 +499,7 @@ pub async fn start_server(
             .service(token_exchange)
             .service(revoke_token)
             .service(device_authorization)
+            .service(approve_device)
             .service(device_poll)
     })
     .bind(bind_address)?

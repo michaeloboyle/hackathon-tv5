@@ -87,6 +87,9 @@ prometheus = "0.13"
 thiserror = "1"
 anyhow = "1"
 
+# Message queue
+rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "gssapi"] }
+
 # gRPC
 tonic = { version = "0.10", features = ["tls", "gzip"] }
 tonic-build = "0.10"
@@ -122,6 +125,10 @@ regex = "1"
 url = { version = "2", features = ["serde"] }
 bytes = "1"
 num_cpus = "1.16"
+
+# Cryptography
+sha2 = "0.10"
+hex = "0.4"
 
 # CLI (for services that need it)
 clap = { version = "4", features = ["derive", "env"] }

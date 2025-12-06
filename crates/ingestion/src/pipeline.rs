@@ -5,6 +5,7 @@ use crate::{
     entity_resolution::EntityResolver,
     genre_mapping::GenreMapper,
     embedding::EmbeddingGenerator,
+    qdrant::{QdrantClient, to_content_point},
     rate_limit::RateLimitManager,
     repository::{ContentRepository, PostgresContentRepository},
     Result, IngestionError,
@@ -47,6 +48,7 @@ pub struct IngestionPipeline {
     entity_resolver: Arc<EntityResolver>,
     genre_mapper: Arc<GenreMapper>,
     embedding_generator: Arc<EmbeddingGenerator>,
+    qdrant_client: Option<Arc<QdrantClient>>,
     rate_limiter: Arc<RateLimitManager>,
     repository: Arc<dyn ContentRepository>,
     schedule: IngestionSchedule,
@@ -70,11 +72,21 @@ impl IngestionPipeline {
             entity_resolver: Arc::new(entity_resolver),
             genre_mapper: Arc::new(genre_mapper),
             embedding_generator: Arc::new(embedding_generator),
+            qdrant_client: None,
             rate_limiter: Arc::new(rate_limiter),
             repository: Arc::new(PostgresContentRepository::new(pool)),
             schedule,
             regions,
         }
+    }
+
+    /// Set the Qdrant client for vector indexing
+    ///
+    /// # Arguments
+    /// * `qdrant_client` - Optional Qdrant client for storing embeddings
+    pub fn with_qdrant(mut self, qdrant_client: Option<QdrantClient>) -> Self {
+        self.qdrant_client = qdrant_client.map(Arc::new);
+        self
     }
 
     /// Start the ingestion pipeline with all scheduled tasks
@@ -112,6 +124,7 @@ impl IngestionPipeline {
         let entity_resolver = self.entity_resolver.clone();
         let genre_mapper = self.genre_mapper.clone();
         let embedding_generator = self.embedding_generator.clone();
+        let qdrant_client = self.qdrant_client.clone();
         let rate_limiter = self.rate_limiter.clone();
         let repository = self.repository.clone();
         let regions = self.regions.clone();
@@ -130,6 +143,7 @@ impl IngestionPipeline {
                             &entity_resolver,
                             &genre_mapper,
                             &embedding_generator,
+                            qdrant_client.as_ref().map(|c| c.as_ref()),
                             &rate_limiter,
                             repository.as_ref(),
                             region,
@@ -235,6 +249,7 @@ impl IngestionPipeline {
         entity_resolver: &EntityResolver,
         genre_mapper: &GenreMapper,
         embedding_generator: &EmbeddingGenerator,
+        qdrant_client: Option<&QdrantClient>,
         rate_limiter: &RateLimitManager,
         repository: &dyn ContentRepository,
         region: &str,
@@ -261,6 +276,7 @@ impl IngestionPipeline {
                 entity_resolver,
                 genre_mapper,
                 embedding_generator,
+                qdrant_client,
                 repository,
             ).await?;
         }
@@ -275,8 +291,11 @@ impl IngestionPipeline {
         entity_resolver: &EntityResolver,
         genre_mapper: &GenreMapper,
         embedding_generator: &EmbeddingGenerator,
+        qdrant_client: Option<&QdrantClient>,
         repository: &dyn ContentRepository,
     ) -> Result<()> {
+        let mut qdrant_points = Vec::new();
+
         for raw in batch {
             // Normalize to canonical format
             let mut canonical = normalizer.normalize(raw.clone())
@@ -308,6 +327,21 @@ impl IngestionPipeline {
 
             debug!("Processed and persisted content: {} (id: {}, entity: {:?})",
                 canonical.title, content_id, canonical.entity_id);
+
+            // Prepare for Qdrant batch upsert if client is available
+            if qdrant_client.is_some() {
+                match to_content_point(&canonical, content_id) {
+                    Ok(point) => qdrant_points.push(point),
+                    Err(e) => warn!("Failed to create Qdrant point for {}: {}", content_id, e),
+                }
+            }
+        }
+
+        // Batch upsert to Qdrant after DB persistence
+        if let Some(client) = qdrant_client {
+            if !qdrant_points.is_empty() {
+                client.upsert_batch(qdrant_points).await?;
+            }
         }
 
         Ok(())
