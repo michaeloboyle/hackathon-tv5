@@ -3,6 +3,7 @@
 // VibeCheck
 //
 // Swift wrapper around Ruvector WASM for on-device learning
+// Uses WasmKit (https://github.com/swiftwasm/WasmKit) for pure-Swift WASM execution
 //
 
 import Foundation
@@ -10,7 +11,7 @@ import WasmKit
 
 /// Bridge between VibeCheck and Ruvector WASM recommendation engine
 ///
-/// Provides privacy-preserving on-device learning with 8M+ ops/sec performance.
+/// Provides privacy-preserving on-device learning with high-performance WASM execution.
 /// All learning happens locally - zero network requests.
 ///
 /// Usage:
@@ -26,9 +27,9 @@ import WasmKit
 /// ```
 @available(iOS 15.0, *)
 public class RuvectorBridge {
-    
+
     // MARK: - Types
-    
+
     /// Ruvector's vibe state (from their API)
     struct VibeState {
         var energy: Float      // 0.0 = calm, 1.0 = energetic
@@ -37,7 +38,7 @@ public class RuvectorBridge {
         var timeContext: Float // 0.0 = morning, 1.0 = night
         var preferences: (Float, Float, Float, Float)
     }
-    
+
     struct ContentMetadata {
         let id: UInt64
         let contentType: UInt8  // 0 = video
@@ -46,75 +47,147 @@ public class RuvectorBridge {
         let popularity: Float
         let recency: Float
     }
-    
-    enum RuvectorError: Error {
+
+    enum RuvectorError: Error, LocalizedError {
         case wasmNotLoaded
         case invalidPath
         case loadFailed(String)
         case functionNotFound(String)
         case conversionFailed
+        case memoryNotFound
+        case instantiationFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .wasmNotLoaded: return "WASM module not loaded"
+            case .invalidPath: return "Invalid WASM file path"
+            case .loadFailed(let msg): return "Failed to load WASM: \(msg)"
+            case .functionNotFound(let name): return "Function '\(name)' not found in WASM exports"
+            case .conversionFailed: return "Type conversion failed"
+            case .memoryNotFound: return "WASM memory export not found"
+            case .instantiationFailed(let msg): return "WASM instantiation failed: \(msg)"
+            }
+        }
     }
-    
+
     // MARK: - Properties
-    
-    private var wasmModule: WasmKit.Module?
-    private var wasmInstance: WasmKit.Instance?
-    private var memory: WasmKit.Memory?
-    
+
+    private var engine: Engine?
+    private var store: Store?
+    private var wasmModule: Module?
+    private var wasmInstance: Instance?
+
     private let embeddingDim: Int
     private let numActions: Int
-    
+
+    /// Whether the WASM module is loaded and ready
     public private(set) var isReady: Bool = false
-    
+
+    /// Time taken to load the WASM module (for benchmarking)
+    public private(set) var loadTimeMs: Double = 0
+
+    /// List of exported function names (for debugging)
+    public private(set) var exportedFunctions: [String] = []
+
     // MARK: - Initialization
-    
+
     public init(embeddingDim: Int = 64, numActions: Int = 100) {
         self.embeddingDim = embeddingDim
         self.numActions = numActions
     }
-    
+
     // MARK: - Lifecycle
-    
-    /// Load the WASM module
+
+    /// Load the WASM module from a file path
+    ///
+    /// - Parameter wasmPath: Path to the .wasm file
+    /// - Throws: RuvectorError if loading fails
     public func load(wasmPath: String) async throws {
         guard FileManager.default.fileExists(atPath: wasmPath) else {
             throw RuvectorError.invalidPath
         }
-        
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+
         do {
             // Load WASM bytes
             let wasmData = try Data(contentsOf: URL(fileURLWithPath: wasmPath))
-            
-            // Create WasmKit engine
-            let engine = Engine()
-            let store = Store(engine: engine)
-            
-            // Compile module
-            self.wasmModule = try Module(store: store, bytes: Array(wasmData))
-            
-            // Create imports (WASI support)
-            var imports = Imports()
-            
-            // Instantiate
-            self.wasmInstance = try wasmModule!.instantiate(store: store, imports: imports)
-            
-            // Get memory reference
-            if let memoryExport = wasmInstance!.exports.first(where: { $0.name == "memory" }) {
-                self.memory = memoryExport.value as? WasmKit.Memory
+            let wasmBytes = Array(wasmData)
+
+            // Create WasmKit engine and store
+            self.engine = Engine()
+            self.store = Store(engine: engine!)
+
+            // Parse WASM module using WasmKit's parseWasm function
+            self.wasmModule = try parseWasm(bytes: wasmBytes)
+
+            // Create empty imports (WASI functions would go here if needed)
+            let imports = Imports()
+
+            // Instantiate module
+            self.wasmInstance = try wasmModule!.instantiate(store: store!, imports: imports)
+
+            // Record exported functions for debugging
+            self.exportedFunctions = wasmInstance!.exports.map { $0.0 }
+
+            // Calculate load time
+            self.loadTimeMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+
+            // Try to initialize if init function exists
+            if hasExportedFunction(name: "init") {
+                try callInit()
             }
-            
-            // Initialize Ruvector
-            try await callInit()
-            
+
             self.isReady = true
-            
+            print("✅ RuvectorBridge: WASM loaded in \(String(format: "%.1f", loadTimeMs))ms")
+            print("   Exports: \(exportedFunctions.joined(separator: ", "))")
+
+        } catch let error as RuvectorError {
+            throw error
         } catch {
             throw RuvectorError.loadFailed(error.localizedDescription)
         }
     }
-    
+
+    /// Load the WASM module from bundle
+    public func loadFromBundle() async throws {
+        guard let path = Bundle.main.path(forResource: "ruvector", ofType: "wasm") else {
+            throw RuvectorError.invalidPath
+        }
+        try await load(wasmPath: path)
+    }
+
+    // MARK: - Export Access
+
+    /// Check if an exported function exists
+    private func hasExportedFunction(name: String) -> Bool {
+        guard let instance = wasmInstance else { return false }
+        if case .function(_) = instance.export(name) {
+            return true
+        }
+        return false
+    }
+
+    /// Get an exported function by name
+    private func getExportedFunction(name: String) -> Function? {
+        guard let instance = wasmInstance else { return nil }
+        if case .function(let function) = instance.export(name) {
+            return function
+        }
+        return nil
+    }
+
+    /// Get exported memory
+    private func getExportedMemory() -> Memory? {
+        guard let instance = wasmInstance else { return nil }
+        if case .memory(let memory) = instance.export("memory") {
+            return memory
+        }
+        return nil
+    }
+
     // MARK: - Context Mapping
-    
+
     /// Map VibeCheck's VibeContext to Ruvector's VibeState
     func mapToVibeState(_ context: VibeContext) -> VibeState {
         // Energy: 0.0 (low) to 1.0 (high)
@@ -125,7 +198,7 @@ public class RuvectorBridge {
             case .high: return 0.8
             }
         }()
-        
+
         // Mood: -1.0 (stressed/negative) to 1.0 (positive)
         let mood: Float = {
             switch context.mood.stress {
@@ -134,7 +207,7 @@ public class RuvectorBridge {
             case .low: return 0.5   // Low stress = positive mood
             }
         }()
-        
+
         // Focus: Based on energy and stress combination
         let focus: Float = {
             if context.mood.energy == .high && context.mood.stress == .low {
@@ -145,14 +218,14 @@ public class RuvectorBridge {
                 return 0.5  // Balanced
             }
         }()
-        
+
         // Time context: 0.0 (morning) to 1.0 (night)
         let hour = Calendar.current.component(.hour, from: Date())
         let timeContext = Float(hour) / 24.0
-        
+
         // Preferences: Extract from keywords (simplified)
         let preferences: (Float, Float, Float, Float) = (0, 0, 0, 0)
-        
+
         return VibeState(
             energy: energy,
             mood: mood,
@@ -161,26 +234,26 @@ public class RuvectorBridge {
             preferences: preferences
         )
     }
-    
+
     /// Convert MediaItem to Ruvector ContentMetadata
     private func mapToContentMetadata(_ item: MediaItem, context: VibeContext) -> ContentMetadata {
         // Generate stable ID from string ID
         let id = UInt64(item.id.hashValue).magnitude
-        
+
         // Category flags: Encode genres as bit flags
         var categoryFlags: UInt32 = 0
-        for (index, genre) in item.genres.enumerated() where index < 32 {
+        for (index, _) in item.genres.enumerated() where index < 32 {
             categoryFlags |= (1 << index)
         }
-        
+
         // Popularity: Normalized value (0.0 - 1.0)
-        let popularity: Float = 0.5  // Default, can be enriched later
-        
+        let popularity: Float = Float(item.rating ?? 5.0) / 10.0
+
         // Recency: Based on year
         let currentYear = Calendar.current.component(.year, from: Date())
         let yearDiff = max(0, currentYear - item.year)
-        let recency = Float(max(0, 10 - yearDiff)) / 10.0  // More recent = higher score
-        
+        let recency = Float(max(0, 10 - yearDiff)) / 10.0
+
         return ContentMetadata(
             id: id,
             contentType: 0,  // Video
@@ -190,9 +263,9 @@ public class RuvectorBridge {
             recency: recency
         )
     }
-    
-    //MARK: - Learning
-    
+
+    // MARK: - Learning
+
     /// Record a watch event for learning
     public func recordWatchEvent(
         _ item: MediaItem,
@@ -202,44 +275,51 @@ public class RuvectorBridge {
         guard isReady else {
             throw RuvectorError.wasmNotLoaded
         }
-        
+
         // Map to Ruvector types
         let vibeState = mapToVibeState(context)
         let content = mapToContentMetadata(item, context: context)
-        
-        // Set current vibe
-        try await setVibe(vibeState)
-        
-        // Embed content
-        try await embedContent(content)
-        
+
+        // Set current vibe if function exists
+        if hasExportedFunction(name: "set_vibe") {
+            try setVibe(vibeState)
+        }
+
+        // Embed content if function exists
+        if hasExportedFunction(name: "embed_content") {
+            try embedContent(content)
+        }
+
         // Calculate satisfaction score based on watch duration
         let expectedDuration = Double(item.runtime * 60)
         let watchRatio = min(1.0, Double(durationSeconds) / expectedDuration)
         let satisfaction = Float(watchRatio)
-        
-        // Update learning (Q-learning)
-        try await updateLearning(
-            contentId: content.id,
-            interactionType: durationSeconds > 0 ? 4 : 3,  // 4=complete, 3=skip
-            timeSpent: satisfaction,
-            position: 0
-        )
+
+        // Update learning (Q-learning) if function exists
+        if hasExportedFunction(name: "update_learning") {
+            try updateLearning(
+                contentId: content.id,
+                interactionType: durationSeconds > 0 ? 4 : 3,
+                timeSpent: satisfaction,
+                position: 0
+            )
+        }
     }
-    
+
     /// Learn from user interaction
     public func learn(satisfaction: Double) async throws {
         guard isReady else {
             throw RuvectorError.wasmNotLoaded
         }
-        
-        // Propagate reward signal
-        // This reinforces recent interactions
-        // (Implementation depends on Ruvector's API)
+
+        // Propagate reward signal if learn function exists
+        if let learnFunc = getExportedFunction(name: "learn") {
+            _ = try learnFunc.invoke([.f32(Float(satisfaction))])
+        }
     }
-    
+
     // MARK: - Recommendations
-    
+
     /// Get personalized recommendations
     public func getRecommendations(
         for context: VibeContext,
@@ -248,171 +328,208 @@ public class RuvectorBridge {
         guard isReady else {
             throw RuvectorError.wasmNotLoaded
         }
-        
-        // Set current vibe
-        let vibeState = mapToVibeState(context)
-        try await setVibe(vibeState)
-        
-        // Get recommendations from WASM
-        let contentIds = try await getRecommendationsWASM(limit: limit)
-        
-        // Convert IDs back to MediaItems
-        // (This requires a local content database - simplified for now)
-        return contentIds.compactMap { id in
-            // Lookup MediaItem by ID
-            // For now, return empty array - needs integration with LocalStore
-            return nil
+
+        // Set current vibe if function exists
+        if hasExportedFunction(name: "set_vibe") {
+            let vibeState = mapToVibeState(context)
+            try setVibe(vibeState)
         }
+
+        // Get recommendations from WASM if function exists
+        if let getRecsFunc = getExportedFunction(name: "get_recommendations") {
+            let result = try getRecsFunc.invoke([.i32(Int32(limit))])
+
+            // Parse result - returns pointer to content IDs
+            if let firstResult = result.first, case .i32(let ptr) = firstResult {
+                let contentIds = try readContentIds(fromPointer: Int(ptr), count: limit)
+
+                // Convert IDs back to MediaItems from local catalog
+                return contentIds.compactMap { id in
+                    MediaItem.samples.first { UInt64($0.id.hashValue).magnitude == id }
+                }
+            }
+        }
+
+        return []
     }
-    
+
     // MARK: - Persistence
-    
+
     /// Save learned state to Data
     public func saveState() async throws -> Data {
         guard isReady else {
             throw RuvectorError.wasmNotLoaded
         }
-        
-        // Call WASM save_state function
-        if let saveFunc = try? wasmInstance?.export(function: "save_state") {
-            let ptr = try saveFunc.call()
-            
-            // Read from WASM memory
-            if let ptr = ptr as? Int,
-               let memory = self.memory {
+
+        if let saveFunc = getExportedFunction(name: "save_state") {
+            let result = try saveFunc.invoke([])
+
+            if let firstResult = result.first,
+               case .i32(let ptr) = firstResult,
+               let memory = getExportedMemory() {
                 // Read size from first 4 bytes
-                let size = memory.data.withUnsafeBytes { bytes in
-                    bytes.load(fromByteOffset: ptr, as: UInt32.self)
-                }
-                
+                var sizeBytes = [UInt8](repeating: 0, count: 4)
+                try memory.read(offset: Int(ptr), into: &sizeBytes)
+                let size = UInt32(littleEndian: sizeBytes.withUnsafeBytes { $0.load(as: UInt32.self) })
+
                 // Read data
-                let data = memory.data.subdata(in: ptr + 4..< ptr + 4 + Int(size))
-                return data
+                var dataBytes = [UInt8](repeating: 0, count: Int(size))
+                try memory.read(offset: Int(ptr) + 4, into: &dataBytes)
+                return Data(dataBytes)
             }
         }
-        
+
         return Data()
     }
-    
+
     /// Load saved state from Data
     public func loadState(_ data: Data) async throws {
         guard isReady else {
             throw RuvectorError.wasmNotLoaded
         }
-        
-        // Allocate memory in WASM
-        // Copy data to WASM memory
-        // Call WASM load_state function
-        
-        if let loadFunc = try? wasmInstance?.export(function: "load_state") {
-            // Write data to WASM memory
-            if let memory = self.memory {
-                // Allocate space
-                let ptr = memory.data.count
-                memory.data.append(data)
-                
-                // Call load function
-                try loadFunc.call(Int32(ptr), UInt32(data.count))
+
+        if let loadFunc = getExportedFunction(name: "load_state"),
+           let memory = getExportedMemory(),
+           let allocFunc = getExportedFunction(name: "alloc") {
+            // Allocate memory in WASM
+            let allocResult = try allocFunc.invoke([.i32(Int32(data.count))])
+            guard let firstResult = allocResult.first,
+                  case .i32(let ptr) = firstResult else {
+                return
             }
+
+            // Write data to WASM memory
+            try memory.write(offset: Int(ptr), bytes: Array(data))
+
+            // Call load function
+            _ = try loadFunc.invoke([.i32(ptr), .i32(Int32(data.count))])
         }
     }
-    
+
+    // MARK: - Benchmarking
+
+    /// Benchmark WASM module loading
+    public static func benchmarkLoad(wasmPath: String) async -> (success: Bool, timeMs: Double, error: String?) {
+        let bridge = RuvectorBridge()
+        do {
+            try await bridge.load(wasmPath: wasmPath)
+            return (true, bridge.loadTimeMs, nil)
+        } catch {
+            return (false, 0, error.localizedDescription)
+        }
+    }
+
+    /// Benchmark a simple WASM operation
+    public func benchmarkSimpleOp(iterations: Int = 1000) throws -> Double {
+        guard isReady else {
+            throw RuvectorError.wasmNotLoaded
+        }
+
+        // Look for a simple benchmark function
+        if let benchFunc = getExportedFunction(name: "benchmark") {
+            let start = CFAbsoluteTimeGetCurrent()
+
+            for _ in 0..<iterations {
+                _ = try benchFunc.invoke([])
+            }
+
+            let totalTime = CFAbsoluteTimeGetCurrent() - start
+            return (totalTime * 1000) / Double(iterations)
+        }
+
+        // Fallback: benchmark add function if available
+        if let addFunc = getExportedFunction(name: "add") {
+            let start = CFAbsoluteTimeGetCurrent()
+
+            for i in 0..<iterations {
+                _ = try addFunc.invoke([.i32(Int32(i)), .i32(Int32(i + 1))])
+            }
+
+            let totalTime = CFAbsoluteTimeGetCurrent() - start
+            return (totalTime * 1000) / Double(iterations)
+        }
+
+        return -1 // No benchmark function available
+    }
+
+    /// Get list of exported functions (for debugging)
+    public func listExports() -> [String] {
+        return exportedFunctions
+    }
+
     // MARK: - Private WASM Calls
-    
-    private func callInit() async throws {
-        guard let initFunc = try? wasmInstance?.export(function: "init") else {
-            throw RuvectorError.functionNotFound("init")
+
+    private func callInit() throws {
+        guard let initFunc = getExportedFunction(name: "init") else {
+            return // init is optional
         }
-        
-        try initFunc.call(UInt32(embeddingDim), UInt32(numActions))
+        _ = try initFunc.invoke([.i32(Int32(embeddingDim)), .i32(Int32(numActions))])
     }
-    
-    private func setVibe(_ state: VibeState) async throws {
-        guard let setVibeFunc = try? wasmInstance?.export(function: "set_vibe") else {
-            throw RuvectorError.functionNotFound("set_vibe")
+
+    private func setVibe(_ state: VibeState) throws {
+        guard let setVibeFunc = getExportedFunction(name: "set_vibe") else {
+            return
         }
-        
-        try setVibeFunc.call(
-            state.energy,
-            state.mood,
-            state.focus,
-            state.timeContext,
-            state.preferences.0,
-            state.preferences.1,
-            state.preferences.2,
-            state.preferences.3
-        )
+        _ = try setVibeFunc.invoke([
+            .f32(state.energy),
+            .f32(state.mood),
+            .f32(state.focus),
+            .f32(state.timeContext),
+            .f32(state.preferences.0),
+            .f32(state.preferences.1),
+            .f32(state.preferences.2),
+            .f32(state.preferences.3)
+        ])
     }
-    
-    private func embedContent(_ content: ContentMetadata) async throws {
-        guard let embedFunc = try? wasmInstance?.export(function: "embed_content") else {
-            throw RuvectorError.functionNotFound("embed_content")
+
+    private func embedContent(_ content: ContentMetadata) throws {
+        guard let embedFunc = getExportedFunction(name: "embed_content") else {
+            return
         }
-        
-        try embedFunc.call(
-            content.id,
-            content.contentType,
-            content.durationSecs,
-            content.categoryFlags,
-            content.popularity,
-            content.recency
-        )
+        _ = try embedFunc.invoke([
+            .i64(Int64(content.id)),
+            .i32(Int32(content.contentType)),
+            .i32(Int32(content.durationSecs)),
+            .i32(Int32(content.categoryFlags)),
+            .f32(content.popularity),
+            .f32(content.recency)
+        ])
     }
-    
+
     private func updateLearning(
         contentId: UInt64,
         interactionType: UInt8,
         timeSpent: Float,
         position: UInt8
-    ) async throws {
-        guard let updateFunc = try? wasmInstance?.export(function: "update_learning") else {
-            throw RuvectorError.functionNotFound("update_learning")
+    ) throws {
+        guard let updateFunc = getExportedFunction(name: "update_learning") else {
+            return
         }
-        
-        try updateFunc.call(
-            contentId,
-            interactionType,
-            timeSpent,
-            position
-        )
+        _ = try updateFunc.invoke([
+            .i64(Int64(contentId)),
+            .i32(Int32(interactionType)),
+            .f32(timeSpent),
+            .i32(Int32(position))
+        ])
     }
-    
-    private func getRecommendationsWASM(limit: Int) async throws -> [UInt64] {
-        guard let getRecsFunc = try? wasmInstance?.export(function: "get_recommendations") else {
-            throw RuvectorError.functionNotFound("get_recommendations")
+
+    private func readContentIds(fromPointer ptr: Int, count: Int) throws -> [UInt64] {
+        guard let memory = getExportedMemory() else {
+            throw RuvectorError.memoryNotFound
         }
-        
-        // Call function (returns pointer to ID array)
-        let result = try getRecsFunc.call(UInt32(limit))
-        
-        // Parse result from WASM memory
-        if let ptr = result as? Int,
-           let memory = self.memory {
-            var ids: [UInt64] = []
-            
-            for i in 0..<limit {
-                let offset = ptr + (i * 8)  // 8 bytes per UInt64
-                let id = memory.data.withUnsafeBytes { bytes in
-                    bytes.load(fromByteOffset: offset, as: UInt64.self)
-                }
+
+        var ids: [UInt64] = []
+
+        for i in 0..<count {
+            let offset = ptr + (i * 8)
+            var bytes = [UInt8](repeating: 0, count: 8)
+            try memory.read(offset: offset, into: &bytes)
+            let id = bytes.withUnsafeBytes { $0.load(as: UInt64.self) }
+            if id != 0 {
                 ids.append(id)
             }
-            
-            return ids
         }
-        
-        return []
-    }
-}
 
-// MARK: - WasmKit Extensions
-
-extension WasmKit.Instance {
-    func export(function name: String) throws -> WasmKit.Function {
-        guard let exportedFunc = self.exports.first(where: { $0.name == name }),
-              let function = exportedFunc.value as? WasmKit.Function else {
-            throw RuvectorBridge.RuvectorError.functionNotFound(name)
-        }
-        return function
+        return ids
     }
 }
