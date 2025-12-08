@@ -32,6 +32,9 @@
 		00000017 /* ARWService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000017 /* ARWService.swift */; };
 		00000019 /* BenchmarkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000019 /* BenchmarkView.swift */; };
 		00000020 /* HealthKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 10000020 /* HealthKit.framework */; };
+		0000001A /* RuvectorBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1000001A /* RuvectorBridge.swift */; };
+		0000001B /* ruvector.wasm in Resources */ = {isa = PBXBuildFile; fileRef = 1000001B /* ruvector.wasm */; };
+		0000001C /* WasmKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7000001C /* WasmKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,6 +65,8 @@
 		10000013 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		10000020 /* HealthKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HealthKit.framework; path = System/Library/Frameworks/HealthKit.framework; sourceTree = SDKROOT; };
 		10000100 /* VibeCheck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VibeCheck.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1000001A /* RuvectorBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuvectorBridge.swift; sourceTree = "<group>"; };
+		1000001B /* ruvector.wasm */ = {isa = PBXFileReference; lastKnownFileType = file; path = ruvector.wasm; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -70,6 +75,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				00000020 /* HealthKit.framework in Frameworks */,
+				0000001C /* WasmKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -136,6 +142,7 @@
 				10000015 /* VectorEmbeddingService.swift */,
 				10000016 /* SommelierAgent.swift */,
 				10000017 /* ARWService.swift */,
+				1000001A /* RuvectorBridge.swift */,
 			);
 			path = Engine;
 			sourceTree = "<group>";
@@ -165,6 +172,7 @@
 			isa = PBXGroup;
 			children = (
 				10000013 /* Info.plist */,
+				1000001B /* ruvector.wasm */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -213,6 +221,9 @@
 			dependencies = (
 			);
 			name = VibeCheck;
+			packageProductDependencies = (
+				7000001C /* WasmKit */,
+			);
 			productName = VibeCheck;
 			productReference = 10000100 /* VibeCheck.app */;
 			productType = "com.apple.product-type.application";
@@ -241,6 +252,9 @@
 				Base,
 			);
 			mainGroup = 30000001;
+			packageReferences = (
+				8000001C /* XCRemoteSwiftPackageReference "WasmKit" */,
+			);
 			productRefGroup = 30000011 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -255,6 +269,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0000001B /* ruvector.wasm in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -289,6 +304,7 @@
 				00000016 /* SommelierAgent.swift in Sources */,
 				00000017 /* ARWService.swift in Sources */,
 				00000019 /* BenchmarkView.swift in Sources */,
+				0000001A /* RuvectorBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -502,6 +518,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		8000001C /* XCRemoteSwiftPackageReference "WasmKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swiftwasm/WasmKit";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7000001C /* WasmKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8000001C /* XCRemoteSwiftPackageReference "WasmKit" */;
+			productName = WasmKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 60000001 /* Project object */;
 }
