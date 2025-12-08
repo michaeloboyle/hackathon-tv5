@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import NaturalLanguage
+import WasmKit
 
 struct BenchmarkResult: Identifiable {
     let id = UUID()
@@ -7,6 +9,7 @@ struct BenchmarkResult: Identifiable {
     let target: String
     let actual: String
     let status: Status
+    let isReal: Bool  // Indicates if this is a real measurement vs simulated
 
     enum Status {
         case pass, slow, fail
@@ -26,6 +29,14 @@ struct BenchmarkResult: Identifiable {
             case .fail: return .red
             }
         }
+    }
+
+    init(name: String, target: String, actual: String, status: Status, isReal: Bool = true) {
+        self.name = name
+        self.target = target
+        self.actual = actual
+        self.status = status
+        self.isReal = isReal
     }
 }
 
@@ -87,8 +98,15 @@ struct BenchmarkView: View {
                                 .foregroundStyle(result.status.color)
 
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(result.name)
-                                    .font(.subheadline)
+                                HStack(spacing: 4) {
+                                    Text(result.name)
+                                        .font(.subheadline)
+                                    if !result.isReal {
+                                        Text("(sim)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
                                 Text("Target: \(result.target)")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
@@ -104,6 +122,11 @@ struct BenchmarkView: View {
                 }
             } header: {
                 Text("Results")
+            } footer: {
+                if !results.isEmpty {
+                    Text("All benchmarks are real measurements except those marked (sim)")
+                        .font(.caption2)
+                }
             }
 
             Section {
@@ -139,87 +162,126 @@ struct BenchmarkView: View {
             let startTime = CFAbsoluteTimeGetCurrent()
             var benchmarkResults: [BenchmarkResult] = []
 
-            // 1. WASM Load Time (simulated - we don't have actual WASM yet)
-            let wasmStart = CFAbsoluteTimeGetCurrent()
-            try? await Task.sleep(nanoseconds: 50_000_000) // Simulate 50ms load
-            let wasmTime = (CFAbsoluteTimeGetCurrent() - wasmStart) * 1000
+            // 1. NLEmbedding Load Time (REAL - Apple's on-device NLP)
+            let nlStart = CFAbsoluteTimeGetCurrent()
+            let embedding = NLEmbedding.sentenceEmbedding(for: .english)
+            let nlLoaded = embedding != nil
+            let nlTime = (CFAbsoluteTimeGetCurrent() - nlStart) * 1000
             benchmarkResults.append(BenchmarkResult(
-                name: "WASM Load Time",
+                name: "NLEmbedding Load",
                 target: "<100ms",
-                actual: String(format: "%.1fms", wasmTime),
-                status: wasmTime < 100 ? .pass : (wasmTime < 200 ? .slow : .fail)
+                actual: nlLoaded ? String(format: "%.1fms", nlTime) : "FAILED",
+                status: nlLoaded ? (nlTime < 100 ? .pass : (nlTime < 200 ? .slow : .fail)) : .fail,
+                isReal: true
             ))
 
-            // 2. Context Mapping
-            let contextStart = CFAbsoluteTimeGetCurrent()
-            for _ in 0..<100 {
-                _ = MoodState.default.recommendationHint
-            }
-            let contextTime = (CFAbsoluteTimeGetCurrent() - contextStart) * 1000 / 100
-            benchmarkResults.append(BenchmarkResult(
-                name: "Context Mapping",
-                target: "<1ms/op",
-                actual: String(format: "%.3fms", contextTime),
-                status: contextTime < 1 ? .pass : (contextTime < 5 ? .slow : .fail)
-            ))
-
-            // 3. Watch Event Recording (simulated)
-            let watchStart = CFAbsoluteTimeGetCurrent()
+            // 2. Semantic Vector Generation (REAL - generates actual embedding)
+            let vectorService = VectorEmbeddingService.shared
+            let vectorStart = CFAbsoluteTimeGetCurrent()
+            var vectorSuccess = false
             for _ in 0..<10 {
-                _ = MediaItem.samples.randomElement()
+                if let _ = vectorService.embed(text: "I want a relaxing comedy movie") {
+                    vectorSuccess = true
+                }
             }
-            let watchTime = (CFAbsoluteTimeGetCurrent() - watchStart) * 1000 / 10
+            let vectorTime = (CFAbsoluteTimeGetCurrent() - vectorStart) * 1000 / 10
             benchmarkResults.append(BenchmarkResult(
-                name: "Watch Event Recording",
-                target: "<5ms",
-                actual: String(format: "%.2fms", watchTime),
-                status: watchTime < 5 ? .pass : (watchTime < 10 ? .slow : .fail)
+                name: "Vector Embedding",
+                target: "<10ms/op",
+                actual: vectorSuccess ? String(format: "%.2fms", vectorTime) : "FAILED",
+                status: vectorSuccess ? (vectorTime < 10 ? .pass : (vectorTime < 50 ? .slow : .fail)) : .fail,
+                isReal: true
             ))
 
-            // 4. Recommendation Query
+            // 3. Semantic Search (REAL - searches MediaItem.samples)
+            let searchStart = CFAbsoluteTimeGetCurrent()
+            let searchResults = vectorService.search(
+                query: "feel-good comedy for tired evening",
+                in: MediaItem.samples,
+                limit: 5
+            )
+            let searchTime = (CFAbsoluteTimeGetCurrent() - searchStart) * 1000
+            benchmarkResults.append(BenchmarkResult(
+                name: "Semantic Search (\(MediaItem.samples.count) items)",
+                target: "<100ms",
+                actual: String(format: "%.1fms (%d results)", searchTime, searchResults.count),
+                status: searchTime < 100 ? .pass : (searchTime < 500 ? .slow : .fail),
+                isReal: true
+            ))
+
+            // 4. Mood Classification (REAL - VibePredictor logic)
+            let vibePredictor = VibePredictor()
+            let moodStart = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<100 {
+                _ = vibePredictor.predictVibe(
+                    hrv: 35.0,
+                    sleepHours: 5.5,
+                    steps: 3000.0
+                )
+            }
+            let moodTime = (CFAbsoluteTimeGetCurrent() - moodStart) * 1000 / 100
+            benchmarkResults.append(BenchmarkResult(
+                name: "Mood Classification",
+                target: "<1ms/op",
+                actual: String(format: "%.3fms", moodTime),
+                status: moodTime < 1 ? .pass : (moodTime < 5 ? .slow : .fail),
+                isReal: true
+            ))
+
+            // 5. Recommendation Engine (REAL - filters and scores)
             let recEngine = RecommendationEngine()
-            let queryStart = CFAbsoluteTimeGetCurrent()
+            let recStart = CFAbsoluteTimeGetCurrent()
             for _ in 0..<10 {
                 _ = recEngine.generateRecommendations(
-                    mood: .chill,
+                    mood: MoodState(energy: .low, stress: .stressed),
                     preferences: UserPreferences.default,
                     limit: 10
                 )
             }
-            let queryTime = (CFAbsoluteTimeGetCurrent() - queryStart) * 1000 / 10
+            let recTime = (CFAbsoluteTimeGetCurrent() - recStart) * 1000 / 10
             benchmarkResults.append(BenchmarkResult(
-                name: "Recommendation Query",
-                target: "<50ms",
-                actual: String(format: "%.1fms", queryTime),
-                status: queryTime < 50 ? .pass : (queryTime < 100 ? .slow : .fail)
+                name: "Rule-Based Recommendations",
+                target: "<5ms",
+                actual: String(format: "%.2fms", recTime),
+                status: recTime < 5 ? .pass : (recTime < 20 ? .slow : .fail),
+                isReal: true
             ))
 
-            // 5. State Persistence (simulated)
-            let persistStart = CFAbsoluteTimeGetCurrent()
+            // 6. JSON Serialization (REAL - MoodState encode/decode)
             let encoder = JSONEncoder()
             let decoder = JSONDecoder()
-            for _ in 0..<10 {
-                let data = try? encoder.encode(MoodState.default)
-                if let data = data {
+            let jsonStart = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<100 {
+                if let data = try? encoder.encode(MoodState.default) {
                     _ = try? decoder.decode(MoodState.self, from: data)
                 }
             }
-            let persistTime = (CFAbsoluteTimeGetCurrent() - persistStart) * 1000 / 10
+            let jsonTime = (CFAbsoluteTimeGetCurrent() - jsonStart) * 1000 / 100
             benchmarkResults.append(BenchmarkResult(
-                name: "State Persistence",
-                target: "<10ms",
-                actual: String(format: "%.2fms", persistTime),
-                status: persistTime < 10 ? .pass : (persistTime < 20 ? .slow : .fail)
+                name: "JSON Serialize/Deserialize",
+                target: "<1ms/op",
+                actual: String(format: "%.3fms", jsonTime),
+                status: jsonTime < 1 ? .pass : (jsonTime < 5 ? .slow : .fail),
+                isReal: true
             ))
 
-            // 6. Memory Usage
+            // 7. WASM Module Load (REAL - WasmKit runtime)
+            let wasmResult = await benchmarkWASMLoad()
+            benchmarkResults.append(wasmResult)
+
+            // 8. WASM Function Call (REAL if WASM loaded)
+            let wasmCallResult = await benchmarkWASMCall()
+            benchmarkResults.append(wasmCallResult)
+
+            // 9. Memory Usage (REAL - actual process memory)
             let memoryBytes = getMemoryUsage()
             let memoryMB = Double(memoryBytes) / 1_000_000
             benchmarkResults.append(BenchmarkResult(
                 name: "Memory Usage",
-                target: "<15MB",
+                target: "<100MB",
                 actual: String(format: "%.1fMB", memoryMB),
-                status: memoryMB < 15 ? .pass : (memoryMB < 30 ? .slow : .fail)
+                status: memoryMB < 100 ? .pass : (memoryMB < 200 ? .slow : .fail),
+                isReal: true
             ))
 
             let totalTimeMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
@@ -244,6 +306,95 @@ struct BenchmarkView: View {
         }
 
         return result == KERN_SUCCESS ? info.resident_size : 0
+    }
+
+    // MARK: - WASM Benchmarks
+
+    private func benchmarkWASMLoad() async -> BenchmarkResult {
+        guard let wasmPath = Bundle.main.path(forResource: "ruvector", ofType: "wasm") else {
+            return BenchmarkResult(
+                name: "WASM Module Load",
+                target: "<100ms",
+                actual: "NOT FOUND",
+                status: .fail,
+                isReal: false
+            )
+        }
+
+        let bridge = RuvectorBridge()
+        let start = CFAbsoluteTimeGetCurrent()
+
+        do {
+            try await bridge.load(wasmPath: wasmPath)
+            let loadTime = (CFAbsoluteTimeGetCurrent() - start) * 1000
+
+            let exports = bridge.listExports()
+            let exportInfo = exports.isEmpty ? "" : " (\(exports.count) exports)"
+
+            return BenchmarkResult(
+                name: "WASM Module Load",
+                target: "<100ms",
+                actual: String(format: "%.1fms%@", loadTime, exportInfo),
+                status: loadTime < 100 ? .pass : (loadTime < 500 ? .slow : .fail),
+                isReal: true
+            )
+        } catch {
+            return BenchmarkResult(
+                name: "WASM Module Load",
+                target: "<100ms",
+                actual: "ERROR: \(error.localizedDescription)",
+                status: .fail,
+                isReal: true
+            )
+        }
+    }
+
+    private func benchmarkWASMCall() async -> BenchmarkResult {
+        guard let wasmPath = Bundle.main.path(forResource: "ruvector", ofType: "wasm") else {
+            return BenchmarkResult(
+                name: "WASM Function Call",
+                target: "<1ms/op",
+                actual: "NO WASM",
+                status: .fail,
+                isReal: false
+            )
+        }
+
+        let bridge = RuvectorBridge()
+
+        do {
+            try await bridge.load(wasmPath: wasmPath)
+
+            // Try to benchmark if there's a callable function
+            let opTime = try bridge.benchmarkSimpleOp(iterations: 100)
+
+            if opTime < 0 {
+                // No benchmark function available, just verify WASM is loaded
+                return BenchmarkResult(
+                    name: "WASM Runtime Ready",
+                    target: "loaded",
+                    actual: bridge.isReady ? "YES" : "NO",
+                    status: bridge.isReady ? .pass : .fail,
+                    isReal: true
+                )
+            }
+
+            return BenchmarkResult(
+                name: "WASM Function Call",
+                target: "<1ms/op",
+                actual: String(format: "%.3fms", opTime),
+                status: opTime < 1 ? .pass : (opTime < 5 ? .slow : .fail),
+                isReal: true
+            )
+        } catch {
+            return BenchmarkResult(
+                name: "WASM Function Call",
+                target: "<1ms/op",
+                actual: "ERROR",
+                status: .fail,
+                isReal: true
+            )
+        }
     }
 }
 

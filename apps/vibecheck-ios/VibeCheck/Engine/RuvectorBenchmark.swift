@@ -11,21 +11,21 @@ import SwiftUI
 
 @MainActor
 class RuvectorBenchmark: ObservableObject {
-    @Published var results: [BenchmarkResult] = []
+    @Published var results: [RuvectorBenchmarkResult] = []
     @Published var isRunning = false
-    
-    struct BenchmarkResult: Identifiable {
+
+    struct RuvectorBenchmarkResult: Identifiable {
         let id = UUID()
         let name: String
         let duration: TimeInterval
         let passed: Bool
         let target: TimeInterval?
-        
+
         var status: String {
             guard let target = target else { return passed ? "✅ PASS" : "❌ FAIL" }
             return duration < target ? "✅ PASS" : "⚠️ SLOW"
         }
-        
+
         var details: String {
             guard let target = target else { return "\(Int(duration * 1000))ms" }
             return "\(Int(duration * 1000))ms (target: \(Int(target * 1000))ms)"
@@ -70,7 +70,7 @@ class RuvectorBenchmark: ObservableObject {
         print("\n📦 Benchmark 1: WASM Load Time")
         
         guard let wasmPath = Bundle.main.path(forResource: "ruvector", ofType: "wasm") else {
-            results.append(BenchmarkResult(
+            results.append(RuvectorBenchmarkResult(
                 name: "WASM Load",
                 duration: 0,
                 passed: false,
@@ -86,7 +86,7 @@ class RuvectorBenchmark: ObservableObject {
             try await bridge.load(wasmPath: wasmPath)
             let duration = Date().timeIntervalSince(start)
             
-            results.append(BenchmarkResult(
+            results.append(RuvectorBenchmarkResult(
                 name: "WASM Load",
                 duration: duration,
                 passed: bridge.isReady,
@@ -95,7 +95,7 @@ class RuvectorBenchmark: ObservableObject {
             
             print("✅ Loaded in \(Int(duration * 1000))ms (target: 100ms)")
         } catch {
-            results.append(BenchmarkResult(
+            results.append(RuvectorBenchmarkResult(
                 name: "WASM Load",
                 duration: Date().timeIntervalSince(start),
                 passed: false,
@@ -128,7 +128,7 @@ class RuvectorBenchmark: ObservableObject {
         let duration = Date().timeIntervalSince(start)
         let avgDuration = duration / Double(iterations)
         
-        results.append(BenchmarkResult(
+        results.append(RuvectorBenchmarkResult(
             name: "Context Mapping (1K ops)",
             duration: avgDuration,
             passed: avgDuration < 0.001,
@@ -171,7 +171,7 @@ class RuvectorBenchmark: ObservableObject {
             try await bridge.recordWatchEvent(item, context: context, durationSeconds: 3600)
             let duration = Date().timeIntervalSince(start)
             
-            results.append(BenchmarkResult(
+            results.append(RuvectorBenchmarkResult(
                 name: "Watch Event Recording",
                 duration: duration,
                 passed: duration < 0.005,
@@ -204,7 +204,7 @@ class RuvectorBenchmark: ObservableObject {
             let recommendations = try await bridge.getRecommendations(for: context, limit: 10)
             let duration = Date().timeIntervalSince(start)
             
-            results.append(BenchmarkResult(
+            results.append(RuvectorBenchmarkResult(
                 name: "Recommendation Query (10 items)",
                 duration: duration,
                 passed: duration < 0.05,
@@ -238,14 +238,14 @@ class RuvectorBenchmark: ObservableObject {
             try await bridge.loadState(stateData)
             let loadDuration = Date().timeIntervalSince(loadStart)
             
-            results.append(BenchmarkResult(
+            results.append(RuvectorBenchmarkResult(
                 name: "State Save",
                 duration: saveDuration,
                 passed: saveDuration < 0.01,
                 target: 0.01
             ))
             
-            results.append(BenchmarkResult(
+            results.append(RuvectorBenchmarkResult(
                 name: "State Load",
                 duration: loadDuration,
                 passed: loadDuration < 0.01,
@@ -291,7 +291,7 @@ class RuvectorBenchmark: ObservableObject {
         let memoryAfter = getMemoryUsage()
         let memoryDelta = memoryAfter - memoryBefore
         
-        results.append(BenchmarkResult(
+        results.append(RuvectorBenchmarkResult(
             name: "Memory Usage (100 events)",
             duration: Double(memoryDelta) / 1_000_000, // Convert to MB for display
             passed: memoryDelta < 15_000_000, // 15 MB
@@ -349,11 +349,12 @@ class RuvectorBenchmark: ObservableObject {
     }
 }
 
-// MARK: - SwiftUI View
+// MARK: - SwiftUI View (Deprecated - use BenchmarkView in Views/)
 
-struct BenchmarkView: View {
+/// Legacy benchmark view - use BenchmarkView in Views/ instead
+struct RuvectorBenchmarkView: View {
     @StateObject private var benchmark = RuvectorBenchmark()
-    
+
     var body: some View {
         NavigationView {
             List {
@@ -374,7 +375,7 @@ struct BenchmarkView: View {
                     }
                     .disabled(benchmark.isRunning)
                 }
-                
+
                 if !benchmark.results.isEmpty {
                     Section("Results") {
                         ForEach(benchmark.results) { result in
