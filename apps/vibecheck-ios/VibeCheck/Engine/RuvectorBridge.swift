@@ -334,6 +334,164 @@ class RuvectorBridge {
         return 0
     }
 
+    // MARK: - HNSW Vector Operations
+
+    /// Memory allocation tracking for vectors
+    private static var nextMemoryOffset: Int = 1048576 // Start at 1MB
+    private static let vectorAlignment: Int = 16
+
+    /// Insert a vector into the HNSW index
+    /// - Parameters:
+    ///   - vector: Float array to insert (517 dimensions for combined mood+media)
+    ///   - id: Unique ID for this vector
+    /// - Returns: true if insertion succeeded
+    func insertVector(_ vector: [Float], id: Int32) -> Bool {
+        guard isReady else { return false }
+
+        guard let insertFunc = getExportedFunction(name: "hnsw_insert"),
+              let memory = getWASMMemory() else {
+            print("   ⚠️ hnsw_insert not available or no memory")
+            return false
+        }
+
+        // Allocate memory for the vector
+        let vectorBytes = vector.count * MemoryLayout<Float>.size
+        let alignedSize = (vectorBytes + Self.vectorAlignment - 1) & ~(Self.vectorAlignment - 1)
+        let offset = Self.nextMemoryOffset
+        Self.nextMemoryOffset += alignedSize
+
+        // Write vector to WASM memory
+        do {
+            try writeVectorToMemory(memory: memory, vector: vector, offset: offset)
+
+            // Call hnsw_insert(ptr: i64, dim: i32, id: i32) -> i32
+            let result = try insertFunc.invoke([
+                .i64(UInt64(offset)),
+                .i32(UInt32(vector.count)),
+                .i32(UInt32(bitPattern: id))
+            ])
+
+            if case .i32(let status) = result.first {
+                let success = status == 0
+                if success {
+                    print("   ✅ Inserted vector id=\(id) at offset=\(offset)")
+                }
+                return success
+            }
+        } catch {
+            print("   🔴 hnsw_insert failed: \(error)")
+        }
+
+        return false
+    }
+
+    /// Search HNSW index for k nearest neighbors
+    /// - Parameters:
+    ///   - query: Query vector (517 dimensions)
+    ///   - k: Number of neighbors to return
+    /// - Returns: Array of (id, similarity) tuples
+    func searchHnsw(query: [Float], k: Int32) -> [(Int32, Float)] {
+        guard isReady else { return [] }
+
+        guard let searchFunc = getExportedFunction(name: "hnsw_search"),
+              let memory = getWASMMemory() else {
+            // Fallback to compute_similarity for basic search
+            return fallbackSearch(query: query, k: k)
+        }
+
+        // Allocate memory for query vector
+        let queryBytes = query.count * MemoryLayout<Float>.size
+        let alignedSize = (queryBytes + Self.vectorAlignment - 1) & ~(Self.vectorAlignment - 1)
+        let queryOffset = Self.nextMemoryOffset
+        Self.nextMemoryOffset += alignedSize
+
+        // Allocate memory for results (pairs of i32 id + f32 similarity)
+        let resultSize = Int(k) * (MemoryLayout<Int32>.size + MemoryLayout<Float>.size)
+        let resultOffset = Self.nextMemoryOffset
+        Self.nextMemoryOffset += resultSize
+
+        do {
+            try writeVectorToMemory(memory: memory, vector: query, offset: queryOffset)
+
+            // Call hnsw_search(query_ptr: i64, dim: i32, k: i32) -> i64 (returns result ptr)
+            let result = try searchFunc.invoke([
+                .i64(UInt64(queryOffset)),
+                .i32(UInt32(query.count)),
+                .i32(UInt32(k))
+            ])
+
+            if case .i64(let resultPtr) = result.first, resultPtr != 0 {
+                // Read results from WASM memory
+                return readSearchResults(memory: memory, offset: Int(resultPtr), count: Int(k))
+            }
+        } catch {
+            print("   🔴 hnsw_search failed: \(error)")
+        }
+
+        return fallbackSearch(query: query, k: k)
+    }
+
+    /// Fallback search using compute_similarity when HNSW is not populated
+    private func fallbackSearch(query: [Float], k: Int32) -> [(Int32, Float)] {
+        guard let simFunc = getExportedFunction(name: "compute_similarity") else {
+            return []
+        }
+
+        // For now, return empty - compute_similarity takes hash values, not vectors
+        // A proper implementation would need to iterate through stored vectors
+        return []
+    }
+
+    // MARK: - WASM Memory Access
+
+    /// Get the WASM linear memory
+    private func getWASMMemory() -> Memory? {
+        guard let instance = wasmInstance else { return nil }
+        if case .memory(let mem) = instance.export("memory") {
+            return mem
+        }
+        return nil
+    }
+
+    /// Write a float vector to WASM linear memory using withUnsafeMutableBufferPointer
+    private func writeVectorToMemory(memory: Memory, vector: [Float], offset: Int) {
+        let byteCount = vector.count * MemoryLayout<Float>.size
+        memory.withUnsafeMutableBufferPointer(offset: UInt(offset), count: byteCount) { buffer in
+            vector.withUnsafeBytes { srcBytes in
+                buffer.copyMemory(from: srcBytes)
+            }
+        }
+    }
+
+    /// Read search results from WASM memory using withUnsafeMutableBufferPointer
+    private func readSearchResults(memory: Memory, offset: Int, count: Int) -> [(Int32, Float)] {
+        var results: [(Int32, Float)] = []
+
+        // Each result is (i32 id, f32 similarity) = 8 bytes
+        let resultStride = MemoryLayout<Int32>.size + MemoryLayout<Float>.size
+        let totalBytes = count * resultStride
+
+        memory.withUnsafeMutableBufferPointer(offset: UInt(offset), count: totalBytes) { buffer in
+            for i in 0..<count {
+                let itemOffset = i * resultStride
+
+                // Read id (first 4 bytes)
+                let idPtr = buffer.baseAddress!.advanced(by: itemOffset)
+                let id = idPtr.assumingMemoryBound(to: Int32.self).pointee
+
+                // Read similarity (next 4 bytes)
+                let simPtr = buffer.baseAddress!.advanced(by: itemOffset + 4)
+                let sim = simPtr.assumingMemoryBound(to: Float.self).pointee
+
+                if id >= 0 { // Valid result
+                    results.append((id, sim))
+                }
+            }
+        }
+
+        return results
+    }
+
     /// Legacy benchmark - kept for compatibility but prefers bench_dot_product
     func benchmarkSimpleOp(iterations: Int = 1000) throws -> Double {
         // Try the real dot product benchmark first

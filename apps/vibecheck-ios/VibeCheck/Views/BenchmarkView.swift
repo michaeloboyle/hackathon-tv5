@@ -51,7 +51,7 @@ struct BenchmarkView: View {
 
     /// Build identifier - increment when making changes to verify deployment
     /// Format: v{version}.{build}-{revision}
-    private let buildIdentifier = "v1.0.1-r15"  // Added vector embeddings count
+    private let buildIdentifier = "v1.0.1-r16"  // LearningMemory + HNSW integration
     @State private var memoryUsage: String = "—"
     @State private var totalTime: String = "—"
     @State private var vectorCount: Int = 0
@@ -351,6 +351,25 @@ struct BenchmarkView: View {
             let exports = bridge.listExports()
             let simdStatus = bridge.hasSIMD() ? "SIMD" : "scalar"
             let exportInfo = " (\(exports.count) fn, \(simdStatus))"
+
+            // Index media items into HNSW if empty
+            let initialCount = bridge.getVectorCount()
+            if initialCount == 0 {
+                print("📚 Indexing \(MediaItem.samples.count) media items into HNSW...")
+                let vectorService = VectorEmbeddingService.shared
+
+                for (index, item) in MediaItem.samples.enumerated() {
+                    // Generate embedding for this media item
+                    if let embedding = vectorService.embed(text: item.embeddingText) {
+                        let floatVector = embedding.map { Float($0) }
+                        let success = bridge.insertVector(floatVector, id: Int32(index))
+                        if !success {
+                            print("   ⚠️ Failed to index: \(item.title)")
+                        }
+                    }
+                }
+                print("📚 Indexing complete")
+            }
 
             // Capture vector count from HNSW index
             let count = bridge.getVectorCount()
