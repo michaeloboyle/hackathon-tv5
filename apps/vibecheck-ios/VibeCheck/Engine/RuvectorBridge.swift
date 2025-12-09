@@ -136,7 +136,9 @@ class RuvectorBridge {
                 _ = try globalInitFunc.invoke([])
                 print("   ✅ init() - Rust runtime initialized")
             } catch {
-                print("   ⚠️ init() failed: \(error) - continuing without global init")
+                // Print full trap description for debugging
+                let trapDesc = String(describing: error)
+                print("   ⚠️ init() TRAPPED: \(trapDesc)")
                 // Don't throw - try to continue anyway
             }
         }
@@ -147,7 +149,8 @@ class RuvectorBridge {
                 _ = try recInitFunc.invoke([])
                 print("   ✅ rec_init() - recommendation engine initialized")
             } catch {
-                print("   ⚠️ rec_init() failed: \(error) - benchmarks may not work")
+                let trapDesc = String(describing: error)
+                print("   ⚠️ rec_init() TRAPPED: \(trapDesc)")
             }
         }
 
@@ -157,7 +160,8 @@ class RuvectorBridge {
                 _ = try learnerInitFunc.invoke([])
                 print("   ✅ ios_learner_init() - ML learner initialized")
             } catch {
-                print("   ⚠️ ios_learner_init() failed: \(error) - ML inference may not work")
+                let trapDesc = String(describing: error)
+                print("   ⚠️ ios_learner_init() TRAPPED: \(trapDesc)")
             }
         }
     }
@@ -230,9 +234,15 @@ class RuvectorBridge {
         if let dotFunc = getExportedFunction(name: "bench_dot_product") {
             let start = CFAbsoluteTimeGetCurrent()
 
-            for _ in 0..<iterations {
-                // bench_dot_product takes dimension size, returns f32 result
-                _ = try dotFunc.invoke([.i32(128)]) // 128-dim vectors typical for embeddings
+            do {
+                for _ in 0..<iterations {
+                    // bench_dot_product takes dimension size, returns f32 result
+                    _ = try dotFunc.invoke([.i32(128)]) // 128-dim vectors typical for embeddings
+                }
+            } catch {
+                let trapDesc = String(describing: error)
+                print("   🔴 bench_dot_product TRAPPED: \(trapDesc)")
+                throw error
             }
 
             let totalTime = CFAbsoluteTimeGetCurrent() - start

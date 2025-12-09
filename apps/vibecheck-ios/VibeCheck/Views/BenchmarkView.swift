@@ -51,7 +51,7 @@ struct BenchmarkView: View {
 
     /// Build identifier - increment when making changes to verify deployment
     /// Format: v{version}.{build}-{revision}
-    private let buildIdentifier = "v1.0.1-r11"  // Better error display in benchmarks
+    private let buildIdentifier = "v1.0.1-r13"  // Log trap details to console
     @State private var memoryUsage: String = "—"
     @State private var totalTime: String = "—"
 
@@ -361,7 +361,7 @@ struct BenchmarkView: View {
             return BenchmarkResult(
                 name: "WASM Module Load",
                 target: "<100ms",
-                actual: "ERROR: \(error.localizedDescription)",
+                actual: extractTrapReason(from: error),
                 status: .fail,
                 isReal: true
             )
@@ -408,7 +408,7 @@ struct BenchmarkView: View {
             return BenchmarkResult(
                 name: "WASM Dot Product",
                 target: "<0.1ms/op",
-                actual: "ERR: \(error.localizedDescription)",
+                actual: extractTrapReason(from: error),
                 status: .fail,
                 isReal: true
             )
@@ -455,7 +455,7 @@ struct BenchmarkView: View {
             return BenchmarkResult(
                 name: "WASM HNSW Search",
                 target: "<5ms/op",
-                actual: "ERR: \(error.localizedDescription)",
+                actual: extractTrapReason(from: error),
                 status: .fail,
                 isReal: true
             )
@@ -505,12 +505,44 @@ struct BenchmarkView: View {
             return BenchmarkResult(
                 name: "WASM ML Inference",
                 target: "<1ms/op",
-                actual: "ERROR: \(error.localizedDescription)",
+                actual: extractTrapReason(from: error),
                 status: .fail,
                 isReal: true
             )
         }
     }
+}
+
+// MARK: - Helper to extract WASM trap reason
+
+private func extractTrapReason(from error: Error) -> String {
+    // WasmKit.Trap has a CustomStringConvertible that shows "Trap: <reason>"
+    let description = String(describing: error)
+
+    // Check for known trap patterns
+    if description.contains("unreachable") {
+        return "TRAP: unreachable"
+    } else if description.contains("call stack exhausted") {
+        return "TRAP: stack overflow"
+    } else if description.contains("out of bounds memory") {
+        return "TRAP: memory OOB"
+    } else if description.contains("integer divide by zero") {
+        return "TRAP: div by zero"
+    } else if description.contains("integer overflow") {
+        return "TRAP: int overflow"
+    } else if description.contains("indirect call") {
+        return "TRAP: null call"
+    } else if description.contains("Trap:") {
+        // Extract the reason from "Trap: <reason>"
+        if let range = description.range(of: "Trap: ") {
+            let reason = String(description[range.upperBound...]).prefix(20)
+            return "TRAP: \(reason)"
+        }
+    }
+
+    // Fallback to short description
+    let shortDesc = error.localizedDescription.prefix(25)
+    return "ERR: \(shortDesc)"
 }
 
 // MARK: - Stat Row
