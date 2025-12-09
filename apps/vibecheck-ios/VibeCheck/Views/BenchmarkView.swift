@@ -51,7 +51,7 @@ struct BenchmarkView: View {
 
     /// Build identifier - increment when making changes to verify deployment
     /// Format: v{version}.{build}-{revision}
-    private let buildIdentifier = "v1.0.1-r9"  // Added rec_init + ios_learner_init calls
+    private let buildIdentifier = "v1.0.1-r11"  // Better error display in benchmarks
     @State private var memoryUsage: String = "—"
     @State private var totalTime: String = "—"
 
@@ -408,7 +408,7 @@ struct BenchmarkView: View {
             return BenchmarkResult(
                 name: "WASM Dot Product",
                 target: "<0.1ms/op",
-                actual: "ERROR",
+                actual: "ERR: \(error.localizedDescription)",
                 status: .fail,
                 isReal: true
             )
@@ -455,7 +455,7 @@ struct BenchmarkView: View {
             return BenchmarkResult(
                 name: "WASM HNSW Search",
                 target: "<5ms/op",
-                actual: "ERROR",
+                actual: "ERR: \(error.localizedDescription)",
                 status: .fail,
                 isReal: true
             )

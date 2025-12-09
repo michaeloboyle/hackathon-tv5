@@ -129,6 +129,18 @@ class RuvectorBridge {
     /// Initialize the recommendation engine subsystems
     /// Must be called after instantiation to enable benchmark functions
     private func initializeSubsystems() throws {
+        // 0. Call global 'init' to set up Rust runtime (allocator, panic handler)
+        // This MUST be called first before any other functions
+        if let globalInitFunc = getExportedFunction(name: "init") {
+            do {
+                _ = try globalInitFunc.invoke([])
+                print("   ✅ init() - Rust runtime initialized")
+            } catch {
+                print("   ⚠️ init() failed: \(error) - continuing without global init")
+                // Don't throw - try to continue anyway
+            }
+        }
+
         // 1. Call rec_init to initialize recommendation engine (required for bench_dot_product, etc.)
         if let recInitFunc = getExportedFunction(name: "rec_init") {
             do {
