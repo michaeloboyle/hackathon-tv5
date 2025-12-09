@@ -48,6 +48,10 @@ struct BenchmarkView: View {
 
     @State private var results: [BenchmarkResult] = []
     @State private var isRunning = false
+
+    /// Build identifier - increment when making changes to verify deployment
+    /// Format: v{version}.{build}-{revision}
+    private let buildIdentifier = "v1.0.1-r8"  // Build ID below button, WASM verification
     @State private var memoryUsage: String = "—"
     @State private var totalTime: String = "—"
 
@@ -148,6 +152,12 @@ struct BenchmarkView: View {
                     }
                 }
                 .disabled(isRunning)
+            } footer: {
+                Text("Build: \(buildIdentifier)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 8)
             }
         }
         .navigationTitle("Performance")

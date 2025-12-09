@@ -94,11 +94,15 @@ class RuvectorBridge {
             // Record exported functions for debugging
             self.exportedFunctions = wasmInstance!.exports.map { $0.0 }
 
+            // VERIFICATION: Actually call a WASM function to confirm execution works
+            // This catches issues where module loads but functions trap
+            try verifyWASMExecution()
+
             // Calculate load time
             self.loadTimeMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
 
             self.isReady = true
-            print("✅ RuvectorBridge: WASM loaded in \(String(format: "%.1f", loadTimeMs))ms")
+            print("✅ RuvectorBridge: WASM loaded and verified in \(String(format: "%.1f", loadTimeMs))ms")
             print("   Exports: \(exportedFunctions.joined(separator: ", "))")
 
         } catch let error as RuvectorError {
@@ -114,6 +118,31 @@ class RuvectorBridge {
             throw RuvectorError.invalidPath
         }
         try await load(wasmPath: path)
+    }
+
+    // MARK: - Verification
+
+    /// Verify WASM execution actually works by calling a simple function
+    /// This catches trap errors early instead of reporting false "load success"
+    private func verifyWASMExecution() throws {
+        // Try multiple functions in order of simplicity
+        let testFunctions = ["has_simd", "get_bridge_info", "ios_learner_iterations"]
+
+        for funcName in testFunctions {
+            if let testFunc = getExportedFunction(name: funcName) {
+                do {
+                    _ = try testFunc.invoke([])
+                    print("   ✅ Verified: \(funcName)() executed successfully")
+                    return // Success!
+                } catch {
+                    print("   ⚠️ \(funcName)() trapped: \(error)")
+                    // Try next function
+                }
+            }
+        }
+
+        // If all simple functions fail, the WASM is broken
+        throw RuvectorError.loadFailed("WASM functions trap on execution - module may be corrupted or incompatible")
     }
 
     // MARK: - Export Access
