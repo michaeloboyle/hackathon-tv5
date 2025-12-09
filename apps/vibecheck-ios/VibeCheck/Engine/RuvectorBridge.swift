@@ -361,9 +361,9 @@ class RuvectorBridge {
         Self.nextMemoryOffset += alignedSize
 
         // Write vector to WASM memory
-        do {
-            try writeVectorToMemory(memory: memory, vector: vector, offset: offset)
+        writeVectorToMemory(memory: memory, vector: vector, offset: offset)
 
+        do {
             // Call hnsw_insert(ptr: i64, dim: i32, id: i32) -> i32
             let result = try insertFunc.invoke([
                 .i64(UInt64(offset)),
@@ -410,9 +410,9 @@ class RuvectorBridge {
         let resultOffset = Self.nextMemoryOffset
         Self.nextMemoryOffset += resultSize
 
-        do {
-            try writeVectorToMemory(memory: memory, vector: query, offset: queryOffset)
+        writeVectorToMemory(memory: memory, vector: query, offset: queryOffset)
 
+        do {
             // Call hnsw_search(query_ptr: i64, dim: i32, k: i32) -> i64 (returns result ptr)
             let result = try searchFunc.invoke([
                 .i64(UInt64(queryOffset)),
